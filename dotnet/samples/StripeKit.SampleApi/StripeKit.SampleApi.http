@@ -1,0 +1,6 @@
+@StripeKit.SampleApi_HostAddress = http://localhost:5131
+
+GET {{StripeKit.SampleApi_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
