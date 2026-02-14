@@ -23,17 +23,17 @@ Stripe integrations usually break in 3 places:
 - State is webhook-driven; reconciliation repairs gaps
 
 ## Repo layout example
-- /dotnet/src/StripeKit
-- /dotnet/samples/StripeKit.SampleApi
-- /dotnet/tests/* 
-- /python, /node (reserved for future parity)
+- /src/StripeKit
+- /samples/StripeKit.SampleApi
+- /tests/* 
+
 
 ## Quick start
 1) Set env:
    - STRIPE_SECRET_KEY
    - STRIPE_WEBHOOK_SECRET
 2) Run:
-   - dotnet run --project dotnet/samples/StripeKit.SampleApi
+   - dotnet run --project samples/StripeKit.SampleApi
 3) Forward webhooks (Stripe CLI) to /webhooks/stripe
 4) Test:
    - dotnet test

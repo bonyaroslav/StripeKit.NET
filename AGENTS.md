@@ -19,8 +19,8 @@ Build StripeKit.NET (.NET/C#) as a minimal, readable, testable Stripe integratio
 - Always run `dotnet test` before concluding a task.
 
 ## Commands (canonical)
-- Build: `dotnet build dotnet/StripeKit.NET.sln`
-- Test:  `dotnet test dotnet/StripeKit.NET.sln`
+- Build: `dotnet build StripeKit.NET.sln`
+- Test:  `dotnet test StripeKit.NET.sln`
 
 ## Stripe correctness (non-negotiable)
 - Webhooks verify signature using the *raw request body*.
@@ -38,7 +38,7 @@ Assume webhook delivery can be delayed, retried, or out of order.
 
 ## Planning (keep it lightweight)
 For changes that touch >2 modules or >1 day of work:
-- Write/update a short plan in `dotnet/PLANS.md` (10–20 lines):
+- Write/update a short plan in `docs/plan.md` (10–20 lines):
   goal, non-goals, steps, risks, acceptance checks (commands + key scenarios).
 - Then implement strictly to the plan.
 
