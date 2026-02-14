@@ -103,15 +103,15 @@ Every meaningful log line inside StripeKit should include:
 ## 7) Deliverables / phases (high-level, implementation later)
 Each phase should result in a tangible repo artifact (code structure, tests, docs), but **implementation can be deferred**. The goal now is to define the slice boundaries so you can generate project structure next.
 
-### Phase 1 — Repo scaffold + quality rails
+### Phase 1 — Repo scaffold + quality rails (Done)
 - Create `dotnet/` solution + project layout (library, sample API, unit tests, integration tests)
 - CI-friendly `dotnet build` / `dotnet test`
 - Basic linting/formatting conventions (minimal, not heavy)
 
-### Phase 2 — Core contracts + in-memory store
-- Storage interfaces + in-memory reference
-- Idempotency key strategy (deterministic, bounded length)
-- Minimal domain models + mapping
+### Phase 2 — Core contracts + in-memory store (In progress)
+- Storage interfaces + in-memory reference (Started: customer mapping store)
+- Idempotency key strategy (deterministic, bounded length) (Done)
+- Minimal domain models + mapping (Started: metadata mapping)
 
 ### Phase 3 — Checkout flows (happy path)
 - Create Checkout Session for:
@@ -186,3 +186,8 @@ StripeKit.NET must remain “explainable.” Use three layers:
   - Pointer to docs/plan.md or module README
 
 Keep these comments brief (3–8 lines). Avoid essay-style commentary inside methods.
+
+### Test naming (project convention)
+Use three-part test names with underscores:
+`WhatIsTested_IncomingCondition_ExpectedResult`
+Examples: `Create_SameInputs_ReturnsSameKey`, `TryBeginAsync_Duplicate_ReturnsFalse`.

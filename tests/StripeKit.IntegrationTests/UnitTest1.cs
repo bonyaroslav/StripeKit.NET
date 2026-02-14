@@ -1,10 +1,10 @@
 namespace StripeKit.IntegrationTests;
 
-public class UnitTest1
+public class PlaceholderIntegrationTests
 {
     [Fact]
-    public void Test1()
+    public void Placeholder_EmptySuite_IsPresent()
     {
-
+        Assert.True(true);
     }
 }

@@ -35,4 +35,10 @@ public class StripeMetadataMapperTests
         Assert.True(found);
         Assert.Equal("user_456", userId);
     }
+
+    [Fact]
+    public void CreateForUser_EmptyUserId_ThrowsArgumentException()
+    {
+        Assert.Throws<ArgumentException>(() => StripeMetadataMapper.CreateForUser(""));
+    }
 }

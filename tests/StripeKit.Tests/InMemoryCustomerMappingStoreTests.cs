@@ -25,4 +25,28 @@ public class InMemoryCustomerMappingStoreTests
 
         Assert.Equal("user_2", userId);
     }
+
+    [Fact]
+    public async Task SaveMappingAsync_EmptyUserId_ThrowsArgumentException()
+    {
+        InMemoryCustomerMappingStore store = new InMemoryCustomerMappingStore();
+
+        await Assert.ThrowsAsync<ArgumentException>(() => store.SaveMappingAsync("", "cus_3"));
+    }
+
+    [Fact]
+    public async Task GetCustomerIdAsync_EmptyUserId_ThrowsArgumentException()
+    {
+        InMemoryCustomerMappingStore store = new InMemoryCustomerMappingStore();
+
+        await Assert.ThrowsAsync<ArgumentException>(() => store.GetCustomerIdAsync(""));
+    }
+
+    [Fact]
+    public async Task GetUserIdAsync_EmptyCustomerId_ThrowsArgumentException()
+    {
+        InMemoryCustomerMappingStore store = new InMemoryCustomerMappingStore();
+
+        await Assert.ThrowsAsync<ArgumentException>(() => store.GetUserIdAsync(""));
+    }
 }

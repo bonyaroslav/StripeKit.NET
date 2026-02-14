@@ -38,4 +38,10 @@ public class IdempotencyKeyFactoryTests
     {
         Assert.Throws<ArgumentException>(() => IdempotencyKeyFactory.Create("", "pay_123"));
     }
+
+    [Fact]
+    public void Create_EmptyBusinessId_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => IdempotencyKeyFactory.Create("payment", ""));
+    }
 }
