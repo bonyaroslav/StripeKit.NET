@@ -4,17 +4,20 @@
 StripeKit.NET is a reference-quality .NET toolkit for integrating Stripe **hosted Checkout** to support:
 - One-time payments
 - Subscriptions with invoice-driven lifecycle
-- Customer-entered promotion codes
+- Promotions (customer-entered codes + backend-supplied discounts)
+- Refunds (full refunds for v1)
 …while staying **modular, testable, and operationally safe** (idempotency, verified webhooks, reconciliation, observability).
 
-This file is a **plan + decision log**. Detailed requirements live elsewhere (requirements.md). This plan is intended to be iterated: adjust decisions, then generate/update project structure, then implement phase-by-phase.
+This file is a **plan + decision log**. Detailed requirements live in `docs/requirement.md`. This plan is intended to be iterated: adjust decisions, then generate/update project structure, then implement phase-by-phase.
 
 ---
 
 ## 2) v1 decisions (locked for this plan)
 ### Product / Integration choices
 - **Checkout-first (Stripe-hosted)**. No custom UI/Elements/PaymentIntents in v1.
-- **Promotions: promo entry only** (`allow_promotion_codes`). Default discounts postponed (**placeholder only**).
+- **Payments via Checkout Session** (payment mode). No direct PaymentIntent APIs in v1.
+- **Promotions: promo entry + backend-supplied discounts** (coupons/promo codes where supported).
+- **Refunds included** (full refunds only for v1).
 - **No Customer Portal in v1** (placeholder + docs link).
 - **No Connect / multi-account in v1** (placeholder + docs link).
 
@@ -70,14 +73,19 @@ NOTE: Payment method choices are treated as **configuration and documentation**,
 - Resilient to retries and out-of-order event delivery
 
 5) **Promotions**
-- Promo entry only in Checkout
-- Placeholder: “default discount” (not implemented)
+- Promo entry in Checkout
+- Backend-supplied discounts where supported
+- Pluggable eligibility hook for custom rules
 
-6) **Reconciliation (Demo)**
+6) **Refunds**
+- Full refunds for successful payments
+- Idempotent refund creation based on business refund ID
+
+7) **Reconciliation (Demo)**
 - HTTP endpoint that lists/repairs drift by replaying missed events through the same dedupe + handlers
 - Commented as “extractable to HostedService/CLI”
 
-7) **Observability**
+8) **Observability**
 - OpenTelemetry minimal wiring: traces + logs correlation
 - Required log context fields (see §6)
 
@@ -109,7 +117,7 @@ Each phase should result in a tangible repo artifact (code structure, tests, doc
 - Create Checkout Session for:
   - one-time payment
   - subscription
-- Promo entry enabled
+- Promo entry + backend-supplied discounts
 - Persist “intent records” (business IDs ↔ Stripe IDs)
 
 ### Phase 4 — Webhooks correctness + state convergence
@@ -120,22 +128,27 @@ Each phase should result in a tangible repo artifact (code structure, tests, doc
   - subscription/invoice success/fail (document which events are in scope)
 - Record processing outcomes (success/failure + last error)
 
-### Phase 5 — Reconciliation endpoint (demo-only, extractable)
+### Phase 5 — Refunds
+- Create full refunds for successful payments
+- Idempotent refund creation (business refund ID)
+- Persist refund records with Stripe IDs and status
+
+### Phase 6 — Reconciliation endpoint (demo-only, extractable)
 - `/reconcile` endpoint that replays missed events and repairs drift
 - Design documented so extraction to HostedService/CLI is trivial
 
-### Phase 6 — Observability baseline (OTel)
+### Phase 7 — Observability baseline (OTel)
 - Minimal OpenTelemetry SDK setup
 - Log/trace correlation validated
 - “How to run locally” documented
 
-### Phase 7 — DB adapter sample (demo-only)
+### Phase 8 — DB adapter sample (demo-only)
 - Minimal DB schema + adapter in sample area
 - Explicit disclaimer: demo/reference, not a production mandate
 
-### Phase 8 — Documentation polish + packaging
+### Phase 9 — Documentation polish + packaging
 - README: “how to integrate” (copy/paste friendly)
-- “Design notes”: why Checkout-first, why promo-entry only, why no portal/connect
+- “Design notes”: why Checkout-first, why no PaymentIntents, why no portal/connect
 - Versioned release notes for v1
 
 ---
@@ -144,7 +157,6 @@ Each phase should result in a tangible repo artifact (code structure, tests, doc
 - Customer Portal (placeholder + link)
 - Connect / multi-account routing (`Stripe-Account`) (placeholder + link)
 - Custom payment UI / PaymentIntents / Elements
-- Default discount application (placeholder only)
 
 ---
 
