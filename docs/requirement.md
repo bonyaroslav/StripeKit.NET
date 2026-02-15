@@ -170,13 +170,16 @@ If promo is provided, return one of:
 **Create refund**
 
 * Refund a previously successful payment (full refund is enough for v1).
+* Refund requests are anchored on `business_refund_id` and should be idempotent.
 
 **Persistence**
 Refund record linked to:
 
 * `user_id`
-* original Stripe identifiers
-* refund status
+* `business_refund_id`
+* `business_payment_id`
+* Stripe IDs: payment intent, refund
+* Status: `Pending | Succeeded | Failed`
 
 **Idempotency**
 

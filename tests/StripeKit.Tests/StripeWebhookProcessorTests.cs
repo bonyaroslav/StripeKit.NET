@@ -90,6 +90,33 @@ public class StripeWebhookProcessorTests
         Assert.Equal(SubscriptionStatus.Active, updated!.Status);
     }
 
+    [Fact]
+    public async Task ProcessAsync_DuplicateEvent_ReturnsRecordedOutcome()
+    {
+        string payload = "{\"id\":\"evt_400\",\"object\":\"event\",\"api_version\":\"2022-11-15\",\"created\":1700000000,\"data\":{\"object\":{\"id\":\"pi_400\",\"object\":\"payment_intent\"}},\"livemode\":false,\"pending_webhooks\":1,\"type\":\"payment_intent.succeeded\"}";
+        string secret = "whsec_test";
+        string header = BuildSignatureHeader(payload, secret);
+
+        StripeKitOptions options = new StripeKitOptions();
+        IWebhookEventStore eventStore = new InMemoryWebhookEventStore();
+        IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
+        ISubscriptionRecordStore subscriptionStore = new InMemorySubscriptionRecordStore();
+        WebhookSignatureVerifier verifier = new WebhookSignatureVerifier();
+        IStripeObjectLookup objectLookup = new FakeStripeObjectLookup();
+        StripeWebhookProcessor processor = new StripeWebhookProcessor(verifier, eventStore, paymentStore, subscriptionStore, objectLookup, options);
+
+        PaymentRecord record = new PaymentRecord("user_4", "pay_400", PaymentStatus.Pending, "pi_400", null);
+        await paymentStore.SaveAsync(record);
+
+        WebhookProcessingResult first = await processor.ProcessAsync(payload, header, secret);
+        WebhookProcessingResult second = await processor.ProcessAsync(payload, header, secret);
+
+        Assert.False(first.IsDuplicate);
+        Assert.True(second.IsDuplicate);
+        Assert.NotNull(second.Outcome);
+        Assert.True(second.Outcome!.Succeeded);
+    }
+
     private sealed class FakeStripeObjectLookup : IStripeObjectLookup
     {
         public string? PaymentIntentId { get; set; }

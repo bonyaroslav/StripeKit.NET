@@ -1,6 +1,6 @@
 # StripeKit.NET — High-Level Plan
 
-## Slice plan — Core records + stores (2026-02-15)
+## Slice plan — Core records + stores (2026-02-15, Done)
 Goal: Add minimal payment/subscription records + in-memory stores to complete Phase 2 core contracts.
 Non-goals: No Checkout sessions, no webhooks routing, no Stripe API calls.
 Steps:
@@ -14,7 +14,7 @@ Acceptance:
 - Unit tests cover save + lookup + input validation.
 - Integration test verifies signature + event dedupe path.
 
-## Slice plan — Checkout + Webhook routing (2026-02-15)
+## Slice plan — Checkout + Webhook routing (2026-02-15, Done)
 Goal: Implement Checkout session creation (payment + subscription) and minimal webhook routing.
 Non-goals: No reconciliation, no refunds, no customer portal/connect.
 Steps:
@@ -137,19 +137,19 @@ Each phase should result in a tangible repo artifact (code structure, tests, doc
 - CI-friendly `dotnet build` / `dotnet test`
 - Basic linting/formatting conventions (minimal, not heavy)
 
-### Phase 2 — Core contracts + in-memory store (In progress)
+### Phase 2 — Core contracts + in-memory store (Done)
 - Storage interfaces + in-memory reference (Started: customer mapping store)
 - Idempotency key strategy (deterministic, bounded length) (Done)
 - Minimal domain models + mapping (Started: metadata mapping)
 
-### Phase 3 — Checkout flows (happy path)
+### Phase 3 — Checkout flows (happy path) (Done)
 - Create Checkout Session for:
   - one-time payment
   - subscription
 - Promo entry + backend-supplied discounts
 - Persist “intent records” (business IDs ↔ Stripe IDs)
 
-### Phase 4 — Webhooks correctness + state convergence
+### Phase 4 — Webhooks correctness + state convergence (Done)
 - Verified webhook receiver (raw body)
 - Dedupe by `event.id`
 - Minimal event handlers that converge:
@@ -157,7 +157,7 @@ Each phase should result in a tangible repo artifact (code structure, tests, doc
   - subscription/invoice success/fail (document which events are in scope)
 - Record processing outcomes (success/failure + last error)
 
-### Phase 5 — Refunds
+### Phase 5 — Refunds (In progress)
 - Create full refunds for successful payments
 - Idempotent refund creation (business refund ID)
 - Persist refund records with Stripe IDs and status

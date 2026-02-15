@@ -17,12 +17,14 @@ builder.Services.AddSingleton(new StripeKitOptions
     EnablePayments = true,
     EnableBilling = true,
     EnablePromotions = true,
-    EnableWebhooks = true
+    EnableWebhooks = true,
+    EnableRefunds = true
 });
 builder.Services.AddSingleton<ICustomerMappingStore, InMemoryCustomerMappingStore>();
 builder.Services.AddSingleton<IWebhookEventStore, InMemoryWebhookEventStore>();
 builder.Services.AddSingleton<IPaymentRecordStore, InMemoryPaymentRecordStore>();
 builder.Services.AddSingleton<ISubscriptionRecordStore, InMemorySubscriptionRecordStore>();
+builder.Services.AddSingleton<IRefundRecordStore, InMemoryRefundRecordStore>();
 builder.Services.AddSingleton<IPromotionEligibilityPolicy, AllowAllPromotionEligibilityPolicy>();
 builder.Services.AddSingleton<WebhookSignatureVerifier>();
 builder.Services.AddSingleton<SessionService>();
@@ -33,6 +35,9 @@ builder.Services.AddSingleton<PaymentIntentService>();
 builder.Services.AddSingleton<InvoiceService>();
 builder.Services.AddSingleton<SubscriptionService>();
 builder.Services.AddSingleton<IStripeObjectLookup, StripeObjectLookup>();
+builder.Services.AddSingleton<RefundService>();
+builder.Services.AddSingleton<IRefundClient, StripeRefundClient>();
+builder.Services.AddSingleton<StripeRefundCreator>();
 builder.Services.AddSingleton<StripeWebhookProcessor>();
 
 var app = builder.Build();
@@ -84,6 +89,19 @@ app.MapPost("/checkout/subscription", async (
         session_id = result.Session.Id,
         url = result.Session.Url,
         promotion = result.PromotionResult.Outcome.ToString()
+    });
+});
+
+app.MapPost("/refunds", async (
+    RefundRequest request,
+    StripeRefundCreator creator) =>
+{
+    RefundResult result = await creator.CreateRefundAsync(request);
+
+    return Results.Ok(new
+    {
+        refund_id = result.Refund.Id,
+        status = result.Refund.Status.ToString()
     });
 });
 

@@ -13,19 +13,21 @@ Stripe integrations usually break in 3 places:
 - Payments: Checkout sessions (one-time)
 - Billing : subscriptions + invoice-driven lifecycle
 - Promotions : Checkout promotion codes / discounts
-- Reconciliation : backfill + drift repair. Basic implementation which is easy to integrate.
-- Observability + Tests: structured logs + unit/integration tests
+- Refunds : full refunds (idempotent)
+- Reconciliation : planned (demo endpoint placeholder)
+- Observability : planned (OTel wiring not yet added)
+- Tests : unit + integration
 
 ## Guarantees (the “correctness defaults”)
 - POST calls are idempotent (stable business key → idempotency key)
 - Webhooks verified using the raw request body (no “signature failed” surprises)
 - Events are replay-safe (dedupe by event.id)
-- State is webhook-driven; reconciliation repairs gaps
+- State is webhook-driven; reconciliation repairs gaps (planned)
 
 ## Repo layout example
 - /src/StripeKit
 - /samples/StripeKit.SampleApi
-- /tests/* 
+- /tests/*
 
 
 ## Quick start
@@ -40,7 +42,7 @@ Stripe integrations usually break in 3 places:
 
 ## Integration model (drop-in)
 StripeKit stays small by requiring only a few seams:
-- Storage adapter: mappings, processed events, local billing/payment records
+- Storage adapter: mappings, processed events, local billing/payment/refund records
 - Domain hooks (optional): grant entitlement / email / provisioning
 - Promo policy hook (optional): business rules without touching payment core
 
