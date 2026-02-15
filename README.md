@@ -43,6 +43,30 @@ This adapter is reference/demo-only and is not a production migration or durabil
 4) Test:
    - dotnet test
 
+## Module toggles (feature flags)
+Configure module flags in `samples/StripeKit.SampleApi/appsettings.json` under `StripeKit:Modules`:
+- `EnablePayments`
+- `EnableBilling`
+- `EnablePromotions`
+- `EnableWebhooks`
+- `EnableRefunds`
+
+Example:
+```json
+"StripeKit": {
+  "Modules": {
+    "EnablePayments": true,
+    "EnableBilling": true,
+    "EnablePromotions": true,
+    "EnableWebhooks": true,
+    "EnableRefunds": true
+  }
+}
+```
+
+Invariant:
+- If `EnablePayments` or `EnableBilling` is `true`, `EnableWebhooks` must be `true`.
+
 ## Sample DB mode (optional)
 1) Apply `samples/StripeKit.SampleApi/SampleStorage/schema.sql` to your sample DB.
 2) Set both app settings:
@@ -64,6 +88,46 @@ A scheduled job that:
 - reprocesses safely using the same event.id dedupe + idempotent handlers
 
 (Goal: if a region/network hiccup causes delays or retries, your system converges to the correct state.)
+
+## Required Stripe webhook event types
+Minimum events expected by StripeKit v1:
+- `payment_intent.succeeded`
+- `payment_intent.payment_failed`
+- `customer.subscription.created`
+- `customer.subscription.updated`
+- `customer.subscription.deleted`
+- `invoice.payment_succeeded`
+- `invoice.payment_failed`
+- `refund.created`
+- `refund.updated`
+- `refund.failed`
+
+These should be enabled on your Stripe webhook endpoint that targets `/webhooks/stripe`.
+
+## Idempotency key strategy
+StripeKit supports caller-provided idempotency keys and generates deterministic defaults when omitted.
+
+Recommended stable business anchors:
+- Checkout payment: `checkout_payment:{business_payment_id}`
+- Checkout subscription: `checkout_subscription:{business_subscription_id}`
+- Refund create: `refund:{business_refund_id}`
+- Customer get-or-create: `customer:{user_id}`
+
+Guidelines:
+- Use a stable business ID, never a random GUID per retry.
+- Reuse the same key on retries for the same business operation.
+- Keep one business operation mapped to one idempotency key.
+
+## Promotions modes
+StripeKit supports both:
+- Customer-entered promotions in Checkout (`allow_promotion_codes`)
+- Backend-supplied discount (`coupon` or `promotion_code`)
+
+Promotion outcomes tracked in flow:
+- `Applied`
+- `Invalid`
+- `Expired`
+- `NotApplicable`
 
 ## Observability baseline
 - StripeKit emits activities from source name `StripeKit` for checkout, refunds, webhooks, and reconciliation.
