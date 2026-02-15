@@ -43,6 +43,13 @@ This adapter is reference/demo-only and is not a production migration or durabil
 4) Test:
    - dotnet test
 
+## Sample DB mode (optional)
+1) Apply `samples/StripeKit.SampleApi/SampleStorage/schema.sql` to your sample DB.
+2) Set both app settings:
+   - `StripeKit:DbProviderInvariantName`
+   - `StripeKit:DbConnectionString`
+3) Run sample API; it will use `DbStripeKitStore` instead of in-memory stores.
+
 ## Integration model (drop-in)
 StripeKit stays small by requiring only a few seams:
 - Storage adapter: mappings, processed events, local billing/payment/refund records
