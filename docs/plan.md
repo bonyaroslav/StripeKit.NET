@@ -1,5 +1,34 @@
 # StripeKit.NET — High-Level Plan
 
+## Slice plan — Core records + stores (2026-02-15)
+Goal: Add minimal payment/subscription records + in-memory stores to complete Phase 2 core contracts.
+Non-goals: No Checkout sessions, no webhooks routing, no Stripe API calls.
+Steps:
+1) Define payment/subscription record models + status enums.
+2) Add store interfaces + in-memory implementations with bidirectional lookup.
+3) Add unit tests for save/lookup/validation.
+4) Replace placeholder integration test with a webhook verify + dedupe flow.
+Risks: Over-growing core surface; keep types small and only what tests require.
+Acceptance:
+- `dotnet test StripeKit.NET.sln`
+- Unit tests cover save + lookup + input validation.
+- Integration test verifies signature + event dedupe path.
+
+## Slice plan — Checkout + Webhook routing (2026-02-15)
+Goal: Implement Checkout session creation (payment + subscription) and minimal webhook routing.
+Non-goals: No reconciliation, no refunds, no customer portal/connect.
+Steps:
+1) Add Checkout request/result types + promotion eligibility policy.
+2) Add Stripe Checkout session creator + Stripe client adapter.
+3) Add webhook processor that updates payment/subscription statuses.
+4) Wire sample API endpoints for Checkout + webhooks (raw body).
+5) Add unit tests for Checkout creator + webhook processor.
+Risks: Stripe SDK surface leak; keep Checkout module narrow.
+Acceptance:
+- `dotnet test StripeKit.NET.sln`
+- Payment + subscription Checkout create produce records + idempotency keys.
+- Webhook processing updates stored statuses and records outcomes.
+
 ## 1) Purpose
 StripeKit.NET is a reference-quality .NET toolkit for integrating Stripe **hosted Checkout** to support:
 - One-time payments

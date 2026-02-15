@@ -10,7 +10,7 @@ Stripe integrations usually break in 3 places:
 ## Modules (enable what you need)
 - Core: Stripe client + mapping + helpers
 - Webhooks: signature verify + event.id dedupe + handler routing
-- Payments: PaymentIntent flows
+- Payments: Checkout sessions (one-time)
 - Billing : subscriptions + invoice-driven lifecycle
 - Promotions : Checkout promotion codes / discounts
 - Reconciliation : backfill + drift repair. Basic implementation which is easy to integrate.
