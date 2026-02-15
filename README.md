@@ -49,6 +49,8 @@ This adapter is reference/demo-only and is not a production migration or durabil
    - `StripeKit:DbProviderInvariantName`
    - `StripeKit:DbConnectionString`
 3) Run sample API; it will use `DbStripeKitStore` instead of in-memory stores.
+4) Optional local check:
+   - `pwsh -File samples/StripeKit.SampleApi/SampleStorage/verify-schema.ps1`
 
 ## Integration model (drop-in)
 StripeKit stays small by requiring only a few seams:
