@@ -1,5 +1,6 @@
 using System;
 using System.Text.Json;
+using Stripe;
 
 namespace StripeKit;
 
@@ -33,6 +34,68 @@ public sealed class StripeWebhookEventData
     public string? SubscriptionId { get; }
     public string? CustomerId { get; }
     public string? PaymentIntentId { get; }
+
+    public static StripeWebhookEventData FromEvent(Event stripeEvent)
+    {
+        if (stripeEvent == null)
+        {
+            throw new ArgumentNullException(nameof(stripeEvent));
+        }
+
+        if (string.IsNullOrWhiteSpace(stripeEvent.Id))
+        {
+            throw new ArgumentException("Event ID is required.", nameof(stripeEvent));
+        }
+
+        if (string.IsNullOrWhiteSpace(stripeEvent.Type))
+        {
+            throw new ArgumentException("Event type is required.", nameof(stripeEvent));
+        }
+
+        string? objectId = null;
+        string? objectType = null;
+        string? status = null;
+        string? subscriptionId = null;
+        string? customerId = null;
+        string? paymentIntentId = null;
+
+        object? stripeObject = stripeEvent.Data?.Object;
+        if (stripeObject is PaymentIntent paymentIntent)
+        {
+            objectId = paymentIntent.Id;
+            objectType = "payment_intent";
+            status = paymentIntent.Status;
+            paymentIntentId = paymentIntent.Id;
+            customerId = paymentIntent.CustomerId;
+        }
+        else if (stripeObject is Invoice invoice)
+        {
+            objectId = invoice.Id;
+            objectType = "invoice";
+            status = invoice.Status;
+            subscriptionId = invoice.SubscriptionId;
+            customerId = invoice.CustomerId;
+            paymentIntentId = invoice.PaymentIntentId;
+        }
+        else if (stripeObject is Subscription subscription)
+        {
+            objectId = subscription.Id;
+            objectType = "subscription";
+            status = subscription.Status;
+            subscriptionId = subscription.Id;
+            customerId = subscription.CustomerId;
+        }
+
+        return new StripeWebhookEventData(
+            stripeEvent.Id,
+            stripeEvent.Type,
+            objectId,
+            objectType,
+            status,
+            subscriptionId,
+            customerId,
+            paymentIntentId);
+    }
 
     public static StripeWebhookEventData Parse(string payload)
     {

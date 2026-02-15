@@ -162,7 +162,7 @@ Each phase should result in a tangible repo artifact (code structure, tests, doc
 - Idempotent refund creation (business refund ID)
 - Persist refund records with Stripe IDs and status
 
-### Phase 6 — Reconciliation endpoint (demo-only, extractable)
+### Phase 6 — Reconciliation endpoint (demo-only, extractable) (Done)
 - `/reconcile` endpoint that replays missed events and repairs drift
 - Design documented so extraction to HostedService/CLI is trivial
 

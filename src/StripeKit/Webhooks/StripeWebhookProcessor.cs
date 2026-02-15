@@ -65,6 +65,50 @@ public sealed class StripeWebhookProcessor
         return new WebhookProcessingResult(stripeEvent.Id, stripeEvent.Type, outcome, false);
     }
 
+    public async Task<WebhookProcessingResult> ProcessStripeEventAsync(
+        Stripe.Event stripeEvent,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_options.EnableWebhooks)
+        {
+            throw new InvalidOperationException("Webhooks module is disabled.");
+        }
+
+        if (stripeEvent == null)
+        {
+            throw new ArgumentNullException(nameof(stripeEvent));
+        }
+
+        if (string.IsNullOrWhiteSpace(stripeEvent.Id))
+        {
+            throw new ArgumentException("Event ID is required.", nameof(stripeEvent));
+        }
+
+        if (string.IsNullOrWhiteSpace(stripeEvent.Type))
+        {
+            throw new ArgumentException("Event type is required.", nameof(stripeEvent));
+        }
+
+        bool started = await _eventStore.TryBeginAsync(stripeEvent.Id).ConfigureAwait(false);
+        if (!started)
+        {
+            WebhookEventOutcome? existing = await _eventStore.GetOutcomeAsync(stripeEvent.Id).ConfigureAwait(false);
+            if (existing == null)
+            {
+                existing = new WebhookEventOutcome(false, "Duplicate event without recorded outcome.", DateTimeOffset.UtcNow);
+            }
+
+            return new WebhookProcessingResult(stripeEvent.Id, stripeEvent.Type, existing, true);
+        }
+
+        StripeWebhookEventData data = StripeWebhookEventData.FromEvent(stripeEvent);
+        WebhookEventOutcome outcome = await ProcessInternalAsync(data, cancellationToken).ConfigureAwait(false);
+
+        await _eventStore.RecordOutcomeAsync(stripeEvent.Id, outcome).ConfigureAwait(false);
+
+        return new WebhookProcessingResult(stripeEvent.Id, stripeEvent.Type, outcome, false);
+    }
+
     private async Task<WebhookEventOutcome> ProcessInternalAsync(
         StripeWebhookEventData data,
         CancellationToken cancellationToken)

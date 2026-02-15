@@ -32,6 +32,7 @@ builder.Services.AddSingleton<SessionService>();
 builder.Services.AddSingleton<ICheckoutSessionClient, StripeCheckoutSessionClient>();
 builder.Services.AddSingleton<StripeCheckoutSessionCreator>();
 builder.Services.AddSingleton<EventService>();
+builder.Services.AddSingleton<IStripeEventClient, StripeEventClient>();
 builder.Services.AddSingleton<PaymentIntentService>();
 builder.Services.AddSingleton<InvoiceService>();
 builder.Services.AddSingleton<SubscriptionService>();
@@ -40,6 +41,7 @@ builder.Services.AddSingleton<RefundService>();
 builder.Services.AddSingleton<IRefundClient, StripeRefundClient>();
 builder.Services.AddSingleton<StripeRefundCreator>();
 builder.Services.AddSingleton<StripeWebhookProcessor>();
+builder.Services.AddSingleton<StripeEventReconciler>();
 
 var app = builder.Build();
 
@@ -152,7 +154,23 @@ app.MapPost("/webhooks/stripe", async (
     }
 });
 
-// Reconciliation endpoint placeholder (demo-only; extractable to HostedService/CLI later).
-app.MapPost("/reconcile", () => Results.Ok());
+// Reconciliation endpoint (demo-only; extractable to HostedService/CLI later).
+app.MapPost("/reconcile", async (
+    ReconciliationRequest? request,
+    StripeEventReconciler reconciler,
+    CancellationToken cancellationToken) =>
+{
+    ReconciliationResult result = await reconciler.ReconcileAsync(request, cancellationToken);
+
+    return Results.Ok(new
+    {
+        total = result.Total,
+        processed = result.Processed,
+        duplicates = result.Duplicates,
+        failed = result.Failed,
+        has_more = result.HasMore,
+        last_event_id = result.LastEventId
+    });
+});
 
 app.Run();
