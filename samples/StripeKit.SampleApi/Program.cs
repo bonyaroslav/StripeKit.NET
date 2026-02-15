@@ -1,8 +1,10 @@
+using System.Data.Common;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using Stripe;
 using Stripe.Checkout;
 using StripeKit;
+using StripeKit.SampleApi.SampleStorage;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.Configure(options =>
@@ -29,11 +31,44 @@ builder.Services.AddSingleton(new StripeKitOptions
     EnableWebhooks = true,
     EnableRefunds = true
 });
-builder.Services.AddSingleton<ICustomerMappingStore, InMemoryCustomerMappingStore>();
-builder.Services.AddSingleton<IWebhookEventStore, InMemoryWebhookEventStore>();
-builder.Services.AddSingleton<IPaymentRecordStore, InMemoryPaymentRecordStore>();
-builder.Services.AddSingleton<ISubscriptionRecordStore, InMemorySubscriptionRecordStore>();
-builder.Services.AddSingleton<IRefundRecordStore, InMemoryRefundRecordStore>();
+string? dbProviderInvariantName = builder.Configuration["StripeKit:DbProviderInvariantName"];
+string? dbConnectionString = builder.Configuration["StripeKit:DbConnectionString"];
+
+if (!string.IsNullOrWhiteSpace(dbProviderInvariantName) &&
+    !string.IsNullOrWhiteSpace(dbConnectionString))
+{
+    builder.Services.AddSingleton<Func<DbConnection>>(_ =>
+    {
+        DbProviderFactory providerFactory = DbProviderFactories.GetFactory(dbProviderInvariantName);
+
+        return () =>
+        {
+            DbConnection? connection = providerFactory.CreateConnection();
+            if (connection == null)
+            {
+                throw new InvalidOperationException("Failed to create DB connection.");
+            }
+
+            connection.ConnectionString = dbConnectionString;
+            return connection;
+        };
+    });
+
+    builder.Services.AddSingleton<DbStripeKitStore>();
+    builder.Services.AddSingleton<ICustomerMappingStore>(sp => sp.GetRequiredService<DbStripeKitStore>());
+    builder.Services.AddSingleton<IWebhookEventStore>(sp => sp.GetRequiredService<DbStripeKitStore>());
+    builder.Services.AddSingleton<IPaymentRecordStore>(sp => sp.GetRequiredService<DbStripeKitStore>());
+    builder.Services.AddSingleton<ISubscriptionRecordStore>(sp => sp.GetRequiredService<DbStripeKitStore>());
+    builder.Services.AddSingleton<IRefundRecordStore>(sp => sp.GetRequiredService<DbStripeKitStore>());
+}
+else
+{
+    builder.Services.AddSingleton<ICustomerMappingStore, InMemoryCustomerMappingStore>();
+    builder.Services.AddSingleton<IWebhookEventStore, InMemoryWebhookEventStore>();
+    builder.Services.AddSingleton<IPaymentRecordStore, InMemoryPaymentRecordStore>();
+    builder.Services.AddSingleton<ISubscriptionRecordStore, InMemorySubscriptionRecordStore>();
+    builder.Services.AddSingleton<IRefundRecordStore, InMemoryRefundRecordStore>();
+}
 builder.Services.AddSingleton<IPromotionEligibilityPolicy, AllowAllPromotionEligibilityPolicy>();
 builder.Services.AddSingleton<WebhookSignatureVerifier>();
 builder.Services.AddSingleton<SessionService>();

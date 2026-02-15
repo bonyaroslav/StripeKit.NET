@@ -29,6 +29,9 @@ Stripe integrations usually break in 3 places:
 - /samples/StripeKit.SampleApi
 - /tests/*
 
+Sample API includes a demo DB-backed adapter at `samples/StripeKit.SampleApi/SampleStorage/DbStripeKitStore.cs` with schema at `samples/StripeKit.SampleApi/SampleStorage/schema.sql`.
+This adapter is reference/demo-only and is not a production migration or durability recommendation.
+
 
 ## Quick start
 1) Set env:

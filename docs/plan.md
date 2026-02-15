@@ -190,6 +190,7 @@ Each phase should result in a tangible repo artifact (code structure, tests, doc
 ### Phase 8 — DB adapter sample (demo-only)
 - Minimal DB schema + adapter in sample area
 - Explicit disclaimer: demo/reference, not a production mandate
+- Started: sample DB-backed store + schema added under `samples/StripeKit.SampleApi/SampleStorage`
 
 ### Phase 9 — Documentation polish + packaging
 - README: “how to integrate” (copy/paste friendly)
