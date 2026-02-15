@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using Stripe;
@@ -15,9 +16,10 @@ public class StripeEventReconcilerTests
         IWebhookEventStore eventStore = new InMemoryWebhookEventStore();
         IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
         ISubscriptionRecordStore subscriptionStore = new InMemorySubscriptionRecordStore();
+        IRefundRecordStore refundStore = new InMemoryRefundRecordStore();
         WebhookSignatureVerifier verifier = new WebhookSignatureVerifier();
         IStripeObjectLookup objectLookup = new FakeStripeObjectLookup();
-        StripeWebhookProcessor processor = new StripeWebhookProcessor(verifier, eventStore, paymentStore, subscriptionStore, objectLookup, options);
+        StripeWebhookProcessor processor = new StripeWebhookProcessor(verifier, eventStore, paymentStore, subscriptionStore, refundStore, objectLookup, options);
 
         PaymentRecord payment = new PaymentRecord("user_9", "pay_900", PaymentStatus.Pending, "pi_900", null);
         SubscriptionRecord subscription = new SubscriptionRecord("user_9", "sub_901", SubscriptionStatus.Active, "cus_901", "sub_901");
@@ -88,9 +90,10 @@ public class StripeEventReconcilerTests
         IWebhookEventStore eventStore = new InMemoryWebhookEventStore();
         IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
         ISubscriptionRecordStore subscriptionStore = new InMemorySubscriptionRecordStore();
+        IRefundRecordStore refundStore = new InMemoryRefundRecordStore();
         WebhookSignatureVerifier verifier = new WebhookSignatureVerifier();
         IStripeObjectLookup objectLookup = new FakeStripeObjectLookup();
-        StripeWebhookProcessor processor = new StripeWebhookProcessor(verifier, eventStore, paymentStore, subscriptionStore, objectLookup, options);
+        StripeWebhookProcessor processor = new StripeWebhookProcessor(verifier, eventStore, paymentStore, subscriptionStore, refundStore, objectLookup, options);
 
         PaymentRecord payment = new PaymentRecord("user_9", "pay_900", PaymentStatus.Pending, "pi_900", null);
         await paymentStore.SaveAsync(payment);
@@ -136,6 +139,68 @@ public class StripeEventReconcilerTests
         Assert.Equal(1, second.Duplicates);
     }
 
+    [Fact]
+    public async Task ReconcileAsync_EmitsRunActivityWithTotals()
+    {
+        StripeKitOptions options = new StripeKitOptions();
+        IWebhookEventStore eventStore = new InMemoryWebhookEventStore();
+        IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
+        ISubscriptionRecordStore subscriptionStore = new InMemorySubscriptionRecordStore();
+        IRefundRecordStore refundStore = new InMemoryRefundRecordStore();
+        WebhookSignatureVerifier verifier = new WebhookSignatureVerifier();
+        IStripeObjectLookup objectLookup = new FakeStripeObjectLookup();
+        StripeWebhookProcessor processor = new StripeWebhookProcessor(verifier, eventStore, paymentStore, subscriptionStore, refundStore, objectLookup, options);
+
+        PaymentRecord payment = new PaymentRecord("user_obs_4", "pay_obs_4", PaymentStatus.Pending, "pi_obs_4", null);
+        await paymentStore.SaveAsync(payment);
+
+        StripeList<Event> events = new StripeList<Event>
+        {
+            Data = new List<Event>
+            {
+                new Event
+                {
+                    Id = "evt_obs_4",
+                    Type = "payment_intent.succeeded",
+                    Data = new EventData
+                    {
+                        Object = new PaymentIntent
+                        {
+                            Id = "pi_obs_4",
+                            Status = "succeeded"
+                        }
+                    }
+                }
+            },
+            HasMore = false
+        };
+
+        IStripeEventClient eventClient = new FakeStripeEventClient(events);
+        StripeEventReconciler reconciler = new StripeEventReconciler(eventClient, processor);
+
+        Activity? captured = null;
+        using ActivityListener listener = CreateListener(activity =>
+        {
+            if (activity.OperationName == "stripekit.reconcile.run")
+            {
+                captured = activity;
+            }
+        });
+
+        await reconciler.ReconcileAsync(new ReconciliationRequest
+        {
+            Limit = 1,
+            CreatedAfter = DateTimeOffset.UtcNow.AddDays(-1)
+        });
+
+        Assert.NotNull(captured);
+        Assert.Equal("1", GetTag(captured!, "total"));
+        Assert.Equal("1", GetTag(captured!, "processed"));
+        Assert.Equal("0", GetTag(captured!, "duplicates"));
+        Assert.Equal("0", GetTag(captured!, "failed"));
+        Assert.Equal("evt_obs_4", GetTag(captured!, "last_event_id"));
+    }
+
     private sealed class FakeStripeEventClient : IStripeEventClient
     {
         private readonly StripeList<Event> _events;
@@ -162,5 +227,32 @@ public class StripeEventReconcilerTests
         {
             return Task.FromResult<string?>(null);
         }
+    }
+
+    private static ActivityListener CreateListener(Action<Activity> onStopped)
+    {
+        ActivityListener listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == "StripeKit",
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            SampleUsingParentId = (ref ActivityCreationOptions<string> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = onStopped
+        };
+
+        ActivitySource.AddActivityListener(listener);
+        return listener;
+    }
+
+    private static string? GetTag(Activity activity, string key)
+    {
+        foreach (KeyValuePair<string, object?> item in activity.TagObjects)
+        {
+            if (string.Equals(item.Key, key, StringComparison.Ordinal))
+            {
+                return item.Value?.ToString();
+            }
+        }
+
+        return null;
     }
 }

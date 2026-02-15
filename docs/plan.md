@@ -29,6 +29,21 @@ Acceptance:
 - Payment + subscription Checkout create produce records + idempotency keys.
 - Webhook processing updates stored statuses and records outcomes.
 
+## Slice plan — Observability baseline (2026-02-15, In progress)
+Goal: Add minimal trace correlation across Checkout, Webhooks, Reconciliation, and Refunds with zero new dependencies.
+Non-goals: No external telemetry backend/exporters; no dashboard setup.
+Steps:
+1) Add shared ActivitySource + tag helper in core.
+2) Instrument Checkout, Refund, Webhook processor, and Reconciler flows.
+3) Include required correlation tags (`user_id`, business ids, Stripe ids, `event_id`) when available.
+4) Add unit tests validating trace activities + key tags for major flows.
+5) Update README observability section with local behavior and extension path.
+Risks: Tag drift if emitted inconsistently; keep tag names centralized and stable.
+Acceptance:
+- `dotnet test StripeKit.NET.sln`
+- Successful flows emit `StripeKit` activities with correlation tags.
+- README reflects baseline observability behavior.
+
 ## 1) Purpose
 StripeKit.NET is a reference-quality .NET toolkit for integrating Stripe **hosted Checkout** to support:
 - One-time payments
@@ -157,17 +172,18 @@ Each phase should result in a tangible repo artifact (code structure, tests, doc
   - subscription/invoice success/fail (document which events are in scope)
 - Record processing outcomes (success/failure + last error)
 
-### Phase 5 — Refunds (In progress)
+### Phase 5 — Refunds (Done)
 - Create full refunds for successful payments
 - Idempotent refund creation (business refund ID)
 - Persist refund records with Stripe IDs and status
+- Converge refund status via webhook/reconciliation events (`refund.created`/`refund.updated`/`refund.failed`)
 
 ### Phase 6 — Reconciliation endpoint (demo-only, extractable) (Done)
 - `/reconcile` endpoint that replays missed events and repairs drift
 - Design documented so extraction to HostedService/CLI is trivial
 
-### Phase 7 — Observability baseline (OTel)
-- Minimal OpenTelemetry SDK setup
+### Phase 7 — Observability baseline (In progress)
+- Minimal ActivitySource tracing setup (OTel-ready)
 - Log/trace correlation validated
 - “How to run locally” documented
 

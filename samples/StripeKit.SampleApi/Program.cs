@@ -1,9 +1,17 @@
 using System.Text;
+using Microsoft.Extensions.Logging;
 using Stripe;
 using Stripe.Checkout;
 using StripeKit;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Logging.Configure(options =>
+{
+    options.ActivityTrackingOptions =
+        ActivityTrackingOptions.TraceId |
+        ActivityTrackingOptions.SpanId |
+        ActivityTrackingOptions.ParentId;
+});
 
 string? stripeApiKey = builder.Configuration["STRIPE_SECRET_KEY"] ?? builder.Configuration["Stripe:SecretKey"];
 if (string.IsNullOrWhiteSpace(stripeApiKey))

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using Stripe;
@@ -41,6 +42,11 @@ public sealed class StripeRefundCreator
 
         ValidateRequest(request);
 
+        using Activity? activity = StripeKitDiagnostics.ActivitySource.StartActivity("stripekit.refund.create");
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.UserId, request.UserId);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.BusinessRefundId, request.BusinessRefundId);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.BusinessPaymentId, request.BusinessPaymentId);
+
         PaymentRecord? paymentRecord = await _paymentRecords.GetByBusinessIdAsync(request.BusinessPaymentId).ConfigureAwait(false);
         if (paymentRecord == null)
         {
@@ -62,10 +68,13 @@ public sealed class StripeRefundCreator
             throw new InvalidOperationException("Payment intent ID is required for refund.");
         }
 
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.PaymentIntentId, paymentRecord.PaymentIntentId);
+
         RefundCreateOptions options = BuildRefundOptions(request, paymentRecord.PaymentIntentId);
         string idempotencyKey = ResolveIdempotencyKey(request.IdempotencyKey, request.BusinessRefundId);
 
         StripeRefund refund = await _client.CreateAsync(options, idempotencyKey, cancellationToken).ConfigureAwait(false);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.RefundId, refund.Id);
 
         RefundRecord record = new RefundRecord(
             request.UserId,

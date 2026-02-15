@@ -1,4 +1,5 @@
 using System.Threading;
+using System.Diagnostics;
 using Stripe.Checkout;
 
 namespace StripeKit.Tests;
@@ -128,6 +129,51 @@ public class StripeCheckoutSessionCreatorTests
         Assert.Null(client.LastOptions);
     }
 
+    [Fact]
+    public async Task CreatePaymentSessionAsync_EmitsCorrelationTags()
+    {
+        FakeCheckoutSessionClient client = new FakeCheckoutSessionClient();
+        IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
+        ISubscriptionRecordStore subscriptionStore = new InMemorySubscriptionRecordStore();
+        StripeKitOptions options = new StripeKitOptions();
+        IPromotionEligibilityPolicy policy = new AllowAllPromotionEligibilityPolicy();
+        StripeCheckoutSessionCreator creator = new StripeCheckoutSessionCreator(
+            client,
+            paymentStore,
+            subscriptionStore,
+            options,
+            policy,
+            null);
+
+        CheckoutPaymentSessionRequest request = new CheckoutPaymentSessionRequest
+        {
+            UserId = "user_obs_1",
+            BusinessPaymentId = "pay_obs_1",
+            Amount = 1200,
+            Currency = "usd",
+            ItemName = "Test item",
+            SuccessUrl = "https://example.com/success",
+            CancelUrl = "https://example.com/cancel"
+        };
+
+        Activity? captured = null;
+        using ActivityListener listener = CreateListener(activity =>
+        {
+            if (activity.OperationName == "stripekit.checkout.create_payment")
+            {
+                captured = activity;
+            }
+        });
+
+        await creator.CreatePaymentSessionAsync(request);
+
+        Assert.NotNull(captured);
+        Assert.Equal("user_obs_1", GetTag(captured!, "user_id"));
+        Assert.Equal("pay_obs_1", GetTag(captured!, "business_payment_id"));
+        Assert.Equal("cs_123", GetTag(captured!, "checkout_session_id"));
+        Assert.Equal("pi_123", GetTag(captured!, "payment_intent_id"));
+    }
+
     private sealed class FakeCheckoutSessionClient : ICheckoutSessionClient
     {
         public SessionCreateOptions? LastOptions { get; private set; }
@@ -158,5 +204,32 @@ public class StripeCheckoutSessionCreatorTests
         {
             return Task.FromResult(PromotionValidationResult.Invalid("Denied"));
         }
+    }
+
+    private static ActivityListener CreateListener(Action<Activity> onStopped)
+    {
+        ActivityListener listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == "StripeKit",
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            SampleUsingParentId = (ref ActivityCreationOptions<string> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = onStopped
+        };
+
+        ActivitySource.AddActivityListener(listener);
+        return listener;
+    }
+
+    private static string? GetTag(Activity activity, string key)
+    {
+        foreach (KeyValuePair<string, object?> item in activity.TagObjects)
+        {
+            if (string.Equals(item.Key, key, StringComparison.Ordinal))
+            {
+                return item.Value?.ToString();
+            }
+        }
+
+        return null;
     }
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using Stripe.Checkout;
@@ -47,11 +48,17 @@ public sealed class StripeCheckoutSessionCreator
 
         ValidatePaymentRequest(request);
 
+        using Activity? activity = StripeKitDiagnostics.ActivitySource.StartActivity("stripekit.checkout.create_payment");
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.UserId, request.UserId);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.BusinessPaymentId, request.BusinessPaymentId);
+        StripeKitDiagnostics.SetTag(activity, "currency", request.Currency);
+
         PromotionValidationResult promotionResult = await EvaluatePromotionAsync(request.UserId, request.Discount, cancellationToken)
             .ConfigureAwait(false);
 
         if (request.Discount != null && promotionResult.Outcome != PromotionOutcome.Applied)
         {
+            StripeKitDiagnostics.SetTag(activity, "promotion_outcome", promotionResult.Outcome.ToString());
             return new CheckoutSessionResult(null, promotionResult);
         }
 
@@ -59,6 +66,8 @@ public sealed class StripeCheckoutSessionCreator
         string idempotencyKey = ResolveIdempotencyKey(request.IdempotencyKey, "checkout_payment", request.BusinessPaymentId);
 
         StripeCheckoutSession session = await _client.CreateAsync(options, idempotencyKey, cancellationToken).ConfigureAwait(false);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.CheckoutSessionId, session.Id);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.PaymentIntentId, session.PaymentIntentId);
 
         PaymentRecord record = new PaymentRecord(
             request.UserId,
@@ -89,11 +98,17 @@ public sealed class StripeCheckoutSessionCreator
 
         ValidateSubscriptionRequest(request);
 
+        using Activity? activity = StripeKitDiagnostics.ActivitySource.StartActivity("stripekit.checkout.create_subscription");
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.UserId, request.UserId);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.BusinessSubscriptionId, request.BusinessSubscriptionId);
+        StripeKitDiagnostics.SetTag(activity, "price_id", request.PriceId);
+
         PromotionValidationResult promotionResult = await EvaluatePromotionAsync(request.UserId, request.Discount, cancellationToken)
             .ConfigureAwait(false);
 
         if (request.Discount != null && promotionResult.Outcome != PromotionOutcome.Applied)
         {
+            StripeKitDiagnostics.SetTag(activity, "promotion_outcome", promotionResult.Outcome.ToString());
             return new CheckoutSessionResult(null, promotionResult);
         }
 
@@ -101,6 +116,9 @@ public sealed class StripeCheckoutSessionCreator
         string idempotencyKey = ResolveIdempotencyKey(request.IdempotencyKey, "checkout_subscription", request.BusinessSubscriptionId);
 
         StripeCheckoutSession session = await _client.CreateAsync(options, idempotencyKey, cancellationToken).ConfigureAwait(false);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.CheckoutSessionId, session.Id);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.SubscriptionId, session.SubscriptionId);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.CustomerId, session.CustomerId);
 
         SubscriptionRecord record = new SubscriptionRecord(
             request.UserId,

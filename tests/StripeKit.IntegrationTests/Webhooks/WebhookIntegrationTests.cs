@@ -18,9 +18,10 @@ public class WebhookProcessingIntegrationTests
         IWebhookEventStore store = new InMemoryWebhookEventStore();
         IPaymentRecordStore payments = new InMemoryPaymentRecordStore();
         ISubscriptionRecordStore subscriptions = new InMemorySubscriptionRecordStore();
+        IRefundRecordStore refunds = new InMemoryRefundRecordStore();
         WebhookSignatureVerifier verifier = new WebhookSignatureVerifier();
         IStripeObjectLookup objectLookup = new NoopStripeObjectLookup();
-        StripeWebhookProcessor processor = new StripeWebhookProcessor(verifier, store, payments, subscriptions, objectLookup, options);
+        StripeWebhookProcessor processor = new StripeWebhookProcessor(verifier, store, payments, subscriptions, refunds, objectLookup, options);
 
         PaymentRecord record = new PaymentRecord("user_1", "pay_123", PaymentStatus.Pending, "pi_123", null);
         await payments.SaveAsync(record);

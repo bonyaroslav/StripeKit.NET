@@ -1,4 +1,5 @@
 using System.Threading;
+using System.Diagnostics;
 using Stripe;
 
 namespace StripeKit.Tests;
@@ -172,6 +173,47 @@ public class StripeRefundCreatorTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => creator.CreateRefundAsync(request));
     }
 
+    [Fact]
+    public async Task CreateRefundAsync_EmitsCorrelationTags()
+    {
+        FakeRefundClient client = new FakeRefundClient();
+        IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
+        IRefundRecordStore refundStore = new InMemoryRefundRecordStore();
+        StripeKitOptions options = new StripeKitOptions
+        {
+            EnableRefunds = true
+        };
+        StripeRefundCreator creator = new StripeRefundCreator(client, paymentStore, refundStore, options);
+
+        PaymentRecord payment = new PaymentRecord("user_obs_2", "pay_obs_2", PaymentStatus.Succeeded, "pi_obs_2", null);
+        await paymentStore.SaveAsync(payment);
+
+        RefundRequest request = new RefundRequest
+        {
+            UserId = "user_obs_2",
+            BusinessRefundId = "refund_obs_2",
+            BusinessPaymentId = "pay_obs_2"
+        };
+
+        Activity? captured = null;
+        using ActivityListener listener = CreateListener(activity =>
+        {
+            if (activity.OperationName == "stripekit.refund.create")
+            {
+                captured = activity;
+            }
+        });
+
+        await creator.CreateRefundAsync(request);
+
+        Assert.NotNull(captured);
+        Assert.Equal("user_obs_2", GetTag(captured!, "user_id"));
+        Assert.Equal("refund_obs_2", GetTag(captured!, "business_refund_id"));
+        Assert.Equal("pay_obs_2", GetTag(captured!, "business_payment_id"));
+        Assert.Equal("pi_obs_2", GetTag(captured!, "payment_intent_id"));
+        Assert.Equal("re_123", GetTag(captured!, "refund_id"));
+    }
+
     private sealed class FakeRefundClient : IRefundClient
     {
         public RefundCreateOptions? LastOptions { get; private set; }
@@ -188,5 +230,32 @@ public class StripeRefundCreatorTests
             StripeRefund refund = new StripeRefund("re_123", "pi_123", RefundStatus.Succeeded);
             return Task.FromResult(refund);
         }
+    }
+
+    private static ActivityListener CreateListener(Action<Activity> onStopped)
+    {
+        ActivityListener listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == "StripeKit",
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            SampleUsingParentId = (ref ActivityCreationOptions<string> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = onStopped
+        };
+
+        ActivitySource.AddActivityListener(listener);
+        return listener;
+    }
+
+    private static string? GetTag(Activity activity, string key)
+    {
+        foreach (KeyValuePair<string, object?> item in activity.TagObjects)
+        {
+            if (string.Equals(item.Key, key, StringComparison.Ordinal))
+            {
+                return item.Value?.ToString();
+            }
+        }
+
+        return null;
     }
 }

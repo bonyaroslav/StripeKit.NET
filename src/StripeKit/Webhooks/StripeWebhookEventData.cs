@@ -14,7 +14,8 @@ public sealed class StripeWebhookEventData
         string? objectStatus,
         string? subscriptionId,
         string? customerId,
-        string? paymentIntentId)
+        string? paymentIntentId,
+        string? refundId)
     {
         Id = id;
         Type = type;
@@ -24,6 +25,7 @@ public sealed class StripeWebhookEventData
         SubscriptionId = subscriptionId;
         CustomerId = customerId;
         PaymentIntentId = paymentIntentId;
+        RefundId = refundId;
     }
 
     public string Id { get; }
@@ -34,6 +36,7 @@ public sealed class StripeWebhookEventData
     public string? SubscriptionId { get; }
     public string? CustomerId { get; }
     public string? PaymentIntentId { get; }
+    public string? RefundId { get; }
 
     public static StripeWebhookEventData FromEvent(Event stripeEvent)
     {
@@ -58,6 +61,7 @@ public sealed class StripeWebhookEventData
         string? subscriptionId = null;
         string? customerId = null;
         string? paymentIntentId = null;
+        string? refundId = null;
 
         object? stripeObject = stripeEvent.Data?.Object;
         if (stripeObject is PaymentIntent paymentIntent)
@@ -85,6 +89,14 @@ public sealed class StripeWebhookEventData
             subscriptionId = subscription.Id;
             customerId = subscription.CustomerId;
         }
+        else if (stripeObject is Refund refund)
+        {
+            objectId = refund.Id;
+            objectType = "refund";
+            status = refund.Status;
+            paymentIntentId = refund.PaymentIntentId;
+            refundId = refund.Id;
+        }
 
         return new StripeWebhookEventData(
             stripeEvent.Id,
@@ -94,7 +106,8 @@ public sealed class StripeWebhookEventData
             status,
             subscriptionId,
             customerId,
-            paymentIntentId);
+            paymentIntentId,
+            refundId);
     }
 
     public static StripeWebhookEventData Parse(string payload)
@@ -116,6 +129,7 @@ public sealed class StripeWebhookEventData
         string? subscriptionId = null;
         string? customerId = null;
         string? paymentIntentId = null;
+        string? refundId = null;
 
         if (root.TryGetProperty("data", out JsonElement dataElement) &&
             dataElement.TryGetProperty("object", out JsonElement objectElement))
@@ -138,7 +152,12 @@ public sealed class StripeWebhookEventData
             subscriptionId = objectId;
         }
 
-        return new StripeWebhookEventData(id, type, objectId, objectType, status, subscriptionId, customerId, paymentIntentId);
+        if (string.Equals(objectType, "refund", StringComparison.Ordinal))
+        {
+            refundId = objectId;
+        }
+
+        return new StripeWebhookEventData(id, type, objectId, objectType, status, subscriptionId, customerId, paymentIntentId, refundId);
     }
 
     private static string GetRequiredString(JsonElement root, string propertyName)

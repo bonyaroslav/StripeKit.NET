@@ -2,6 +2,7 @@
 // Must-not-break: raw-body verification, event.id idempotency, replay-safe handlers.
 // See: docs/plan.md and module README for invariants.
 using System;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -13,6 +14,7 @@ public sealed class StripeWebhookProcessor
     private readonly IWebhookEventStore _eventStore;
     private readonly IPaymentRecordStore _paymentRecords;
     private readonly ISubscriptionRecordStore _subscriptionRecords;
+    private readonly IRefundRecordStore _refundRecords;
     private readonly IStripeObjectLookup _objectLookup;
     private readonly StripeKitOptions _options;
 
@@ -21,6 +23,7 @@ public sealed class StripeWebhookProcessor
         IWebhookEventStore eventStore,
         IPaymentRecordStore paymentRecords,
         ISubscriptionRecordStore subscriptionRecords,
+        IRefundRecordStore refundRecords,
         IStripeObjectLookup objectLookup,
         StripeKitOptions options)
     {
@@ -28,6 +31,7 @@ public sealed class StripeWebhookProcessor
         _eventStore = eventStore ?? throw new ArgumentNullException(nameof(eventStore));
         _paymentRecords = paymentRecords ?? throw new ArgumentNullException(nameof(paymentRecords));
         _subscriptionRecords = subscriptionRecords ?? throw new ArgumentNullException(nameof(subscriptionRecords));
+        _refundRecords = refundRecords ?? throw new ArgumentNullException(nameof(refundRecords));
         _objectLookup = objectLookup ?? throw new ArgumentNullException(nameof(objectLookup));
         _options = options ?? throw new ArgumentNullException(nameof(options));
     }
@@ -44,10 +48,14 @@ public sealed class StripeWebhookProcessor
         }
 
         StripeWebhookEvent stripeEvent = _signatureVerifier.VerifyAndParse(payload, signatureHeader, secret);
+        using Activity? activity = StripeKitDiagnostics.ActivitySource.StartActivity("stripekit.webhook.process");
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.EventId, stripeEvent.Id);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.EventType, stripeEvent.Type);
 
         bool started = await _eventStore.TryBeginAsync(stripeEvent.Id).ConfigureAwait(false);
         if (!started)
         {
+            activity?.SetTag("duplicate", true);
             WebhookEventOutcome? existing = await _eventStore.GetOutcomeAsync(stripeEvent.Id).ConfigureAwait(false);
             if (existing == null)
             {
@@ -58,7 +66,10 @@ public sealed class StripeWebhookProcessor
         }
 
         StripeWebhookEventData data = StripeWebhookEventData.Parse(payload);
+        AddDataTags(activity, data);
         WebhookEventOutcome outcome = await ProcessInternalAsync(data, cancellationToken).ConfigureAwait(false);
+        activity?.SetTag("succeeded", outcome.Succeeded);
+        StripeKitDiagnostics.SetTag(activity, "error", outcome.ErrorMessage);
 
         await _eventStore.RecordOutcomeAsync(stripeEvent.Id, outcome).ConfigureAwait(false);
 
@@ -89,9 +100,14 @@ public sealed class StripeWebhookProcessor
             throw new ArgumentException("Event type is required.", nameof(stripeEvent));
         }
 
+        using Activity? activity = StripeKitDiagnostics.ActivitySource.StartActivity("stripekit.webhook.process");
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.EventId, stripeEvent.Id);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.EventType, stripeEvent.Type);
+
         bool started = await _eventStore.TryBeginAsync(stripeEvent.Id).ConfigureAwait(false);
         if (!started)
         {
+            activity?.SetTag("duplicate", true);
             WebhookEventOutcome? existing = await _eventStore.GetOutcomeAsync(stripeEvent.Id).ConfigureAwait(false);
             if (existing == null)
             {
@@ -102,7 +118,10 @@ public sealed class StripeWebhookProcessor
         }
 
         StripeWebhookEventData data = StripeWebhookEventData.FromEvent(stripeEvent);
+        AddDataTags(activity, data);
         WebhookEventOutcome outcome = await ProcessInternalAsync(data, cancellationToken).ConfigureAwait(false);
+        activity?.SetTag("succeeded", outcome.Succeeded);
+        StripeKitDiagnostics.SetTag(activity, "error", outcome.ErrorMessage);
 
         await _eventStore.RecordOutcomeAsync(stripeEvent.Id, outcome).ConfigureAwait(false);
 
@@ -178,6 +197,24 @@ public sealed class StripeWebhookProcessor
                     }
                 }
                 break;
+            case "refund.created":
+            case "refund.updated":
+                if (_options.EnableRefunds)
+                {
+                    if (TryMapRefundStatus(data.ObjectStatus, out RefundStatus status))
+                    {
+                        string refundId = ResolveRefundId(data);
+                        await UpdateRefundStatusAsync(refundId, status).ConfigureAwait(false);
+                    }
+                }
+                break;
+            case "refund.failed":
+                if (_options.EnableRefunds)
+                {
+                    string refundId = ResolveRefundId(data);
+                    await UpdateRefundStatusAsync(refundId, RefundStatus.Failed).ConfigureAwait(false);
+                }
+                break;
         }
     }
 
@@ -243,6 +280,10 @@ public sealed class StripeWebhookProcessor
             record.PaymentIntentId,
             record.ChargeId);
 
+        StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.UserId, record.UserId);
+        StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.BusinessPaymentId, record.BusinessPaymentId);
+        StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.PaymentIntentId, record.PaymentIntentId);
+
         await _paymentRecords.SaveAsync(updated).ConfigureAwait(false);
     }
 
@@ -266,7 +307,70 @@ public sealed class StripeWebhookProcessor
             record.CustomerId,
             record.SubscriptionId);
 
+        StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.UserId, record.UserId);
+        StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.BusinessSubscriptionId, record.BusinessSubscriptionId);
+        StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.SubscriptionId, record.SubscriptionId);
+        StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.CustomerId, record.CustomerId);
+
         await _subscriptionRecords.SaveAsync(updated).ConfigureAwait(false);
+    }
+
+    private async Task UpdateRefundStatusAsync(string? refundId, RefundStatus status)
+    {
+        if (string.IsNullOrWhiteSpace(refundId))
+        {
+            throw new InvalidOperationException("Missing refund id.");
+        }
+
+        RefundRecord? record = await _refundRecords.GetByRefundIdAsync(refundId).ConfigureAwait(false);
+        if (record == null)
+        {
+            throw new InvalidOperationException("Refund record not found for refund id.");
+        }
+
+        RefundRecord updated = new RefundRecord(
+            record.UserId,
+            record.BusinessRefundId,
+            record.BusinessPaymentId,
+            status,
+            record.PaymentIntentId,
+            record.RefundId);
+
+        StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.UserId, record.UserId);
+        StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.BusinessRefundId, record.BusinessRefundId);
+        StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.BusinessPaymentId, record.BusinessPaymentId);
+        StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.RefundId, record.RefundId);
+        StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.PaymentIntentId, record.PaymentIntentId);
+
+        await _refundRecords.SaveAsync(updated).ConfigureAwait(false);
+    }
+
+    private static string ResolveRefundId(StripeWebhookEventData data)
+    {
+        if (!string.IsNullOrWhiteSpace(data.RefundId))
+        {
+            return data.RefundId;
+        }
+
+        if (!string.IsNullOrWhiteSpace(data.ObjectId))
+        {
+            return data.ObjectId;
+        }
+
+        throw new InvalidOperationException("Missing refund id.");
+    }
+
+    private static void AddDataTags(Activity? activity, StripeWebhookEventData data)
+    {
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.StripeObjectId, data.ObjectId);
+        if (string.Equals(data.ObjectType, "invoice", StringComparison.Ordinal))
+        {
+            StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.InvoiceId, data.ObjectId);
+        }
+
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.PaymentIntentId, data.PaymentIntentId);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.SubscriptionId, data.SubscriptionId);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.RefundId, data.RefundId);
     }
 
     private static bool TryMapSubscriptionStatus(string? status, out SubscriptionStatus mapped)
@@ -300,6 +404,36 @@ public sealed class StripeWebhookProcessor
         if (string.Equals(status, "canceled", StringComparison.OrdinalIgnoreCase))
         {
             mapped = SubscriptionStatus.Canceled;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryMapRefundStatus(string? status, out RefundStatus mapped)
+    {
+        mapped = default;
+
+        if (string.IsNullOrWhiteSpace(status))
+        {
+            return false;
+        }
+
+        if (string.Equals(status, "succeeded", StringComparison.OrdinalIgnoreCase))
+        {
+            mapped = RefundStatus.Succeeded;
+            return true;
+        }
+
+        if (string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase))
+        {
+            mapped = RefundStatus.Failed;
+            return true;
+        }
+
+        if (string.Equals(status, "pending", StringComparison.OrdinalIgnoreCase))
+        {
+            mapped = RefundStatus.Pending;
             return true;
         }
 

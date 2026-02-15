@@ -15,7 +15,7 @@ Stripe integrations usually break in 3 places:
 - Promotions : Checkout promotion codes / discounts
 - Refunds : full refunds (idempotent)
 - Reconciliation : demo endpoint (extractable)
-- Observability : planned (OTel wiring not yet added)
+- Observability : baseline trace correlation via `ActivitySource` (`StripeKit`)
 - Tests : unit + integration
 
 ## Guarantees (the “correctness defaults”)
@@ -52,6 +52,11 @@ A scheduled job that:
 - reprocesses safely using the same event.id dedupe + idempotent handlers
 
 (Goal: if a region/network hiccup causes delays or retries, your system converges to the correct state.)
+
+## Observability baseline
+- StripeKit emits activities from source name `StripeKit` for checkout, refunds, webhooks, and reconciliation.
+- Correlation tags include `user_id`, business ids, Stripe ids, and `event_id` when available.
+- Sample API logging enables `trace_id` and `span_id` correlation fields.
 
 ## Want this implemented in your app?
 Share: (1) Checkout vs PaymentIntents, (2) subscriptions yes/no, (3) which events you rely on.

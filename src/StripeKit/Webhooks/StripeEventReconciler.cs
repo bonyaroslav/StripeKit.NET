@@ -3,6 +3,7 @@
 // See: docs/plan.md and module README for invariants.
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using Stripe;
@@ -71,7 +72,10 @@ public sealed class StripeEventReconciler
         "customer.subscription.updated",
         "customer.subscription.deleted",
         "invoice.payment_succeeded",
-        "invoice.payment_failed"
+        "invoice.payment_failed",
+        "refund.created",
+        "refund.updated",
+        "refund.failed"
     };
 
     private readonly IStripeEventClient _eventClient;
@@ -94,6 +98,10 @@ public sealed class StripeEventReconciler
         }
 
         DateTimeOffset createdAfter = request?.CreatedAfter ?? DateTimeOffset.UtcNow.AddDays(-30);
+        using Activity? activity = StripeKitDiagnostics.ActivitySource.StartActivity("stripekit.reconcile.run");
+        activity?.SetTag("limit", limit);
+        activity?.SetTag("created_after", createdAfter.ToString("O"));
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.StartingAfterEventId, request?.StartingAfterEventId);
 
         EventListOptions options = new EventListOptions
         {
@@ -142,6 +150,13 @@ public sealed class StripeEventReconciler
                 processed++;
             }
         }
+
+        activity?.SetTag("total", total);
+        activity?.SetTag("processed", processed);
+        activity?.SetTag("duplicates", duplicates);
+        activity?.SetTag("failed", failed);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.LastEventId, lastEventId);
+        activity?.SetTag("has_more", events.HasMore);
 
         return new ReconciliationResult(total, processed, duplicates, failed, lastEventId, events.HasMore);
     }
