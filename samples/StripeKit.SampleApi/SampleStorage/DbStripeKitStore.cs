@@ -188,7 +188,12 @@ public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore
             ("@charge_id", record.ChargeId)).ConfigureAwait(false);
     }
 
-    public async Task<PaymentRecord?> GetByBusinessIdAsync(string businessPaymentId)
+    Task<PaymentRecord?> IPaymentRecordStore.GetByBusinessIdAsync(string businessPaymentId)
+    {
+        return GetPaymentByBusinessIdAsync(businessPaymentId);
+    }
+
+    private async Task<PaymentRecord?> GetPaymentByBusinessIdAsync(string businessPaymentId)
     {
         if (string.IsNullOrWhiteSpace(businessPaymentId))
         {
@@ -234,7 +239,7 @@ public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore
             return null;
         }
 
-        return await GetByBusinessIdAsync(businessPaymentId).ConfigureAwait(false);
+        return await GetPaymentByBusinessIdAsync(businessPaymentId).ConfigureAwait(false);
     }
 
     public async Task SaveAsync(SubscriptionRecord record)
@@ -274,7 +279,12 @@ public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore
             ("@subscription_id", record.SubscriptionId)).ConfigureAwait(false);
     }
 
-    public async Task<SubscriptionRecord?> GetByBusinessIdAsync(string businessSubscriptionId)
+    Task<SubscriptionRecord?> ISubscriptionRecordStore.GetByBusinessIdAsync(string businessSubscriptionId)
+    {
+        return GetSubscriptionByBusinessIdAsync(businessSubscriptionId);
+    }
+
+    private async Task<SubscriptionRecord?> GetSubscriptionByBusinessIdAsync(string businessSubscriptionId)
     {
         if (string.IsNullOrWhiteSpace(businessSubscriptionId))
         {
@@ -320,7 +330,7 @@ public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore
             return null;
         }
 
-        return await GetByBusinessIdAsync(businessSubscriptionId).ConfigureAwait(false);
+        return await GetSubscriptionByBusinessIdAsync(businessSubscriptionId).ConfigureAwait(false);
     }
 
     public async Task SaveAsync(RefundRecord record)
@@ -362,7 +372,12 @@ public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore
             ("@refund_id", record.RefundId)).ConfigureAwait(false);
     }
 
-    public async Task<RefundRecord?> GetByBusinessIdAsync(string businessRefundId)
+    Task<RefundRecord?> IRefundRecordStore.GetByBusinessIdAsync(string businessRefundId)
+    {
+        return GetRefundByBusinessIdAsync(businessRefundId);
+    }
+
+    private async Task<RefundRecord?> GetRefundByBusinessIdAsync(string businessRefundId)
     {
         if (string.IsNullOrWhiteSpace(businessRefundId))
         {
@@ -409,7 +424,7 @@ public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore
             return null;
         }
 
-        return await GetByBusinessIdAsync(businessRefundId).ConfigureAwait(false);
+        return await GetRefundByBusinessIdAsync(businessRefundId).ConfigureAwait(false);
     }
 
     private async Task<DbConnection> OpenConnectionAsync()

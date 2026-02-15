@@ -288,7 +288,8 @@ public class StripeEventReconcilerTests
         Activity? captured = null;
         using ActivityListener listener = CreateListener(activity =>
         {
-            if (activity.OperationName == "stripekit.webhook.process")
+            if (activity.OperationName == "stripekit.webhook.process" &&
+                string.Equals(GetTag(activity, "event_id"), "evt_obs_5", StringComparison.Ordinal))
             {
                 captured = activity;
             }
