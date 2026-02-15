@@ -15,6 +15,7 @@ public sealed class StripeCheckoutSessionCreator
     private readonly StripeKitOptions _options;
     private readonly IPromotionEligibilityPolicy _promotionPolicy;
     private readonly ICustomerMappingStore? _customerMappingStore;
+    private readonly IStripeCustomerResolver? _customerResolver;
 
     public StripeCheckoutSessionCreator(
         ICheckoutSessionClient client,
@@ -22,7 +23,8 @@ public sealed class StripeCheckoutSessionCreator
         ISubscriptionRecordStore subscriptionRecords,
         StripeKitOptions options,
         IPromotionEligibilityPolicy promotionPolicy,
-        ICustomerMappingStore? customerMappingStore)
+        ICustomerMappingStore? customerMappingStore,
+        IStripeCustomerResolver? customerResolver = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _paymentRecords = paymentRecords ?? throw new ArgumentNullException(nameof(paymentRecords));
@@ -30,6 +32,7 @@ public sealed class StripeCheckoutSessionCreator
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _promotionPolicy = promotionPolicy ?? throw new ArgumentNullException(nameof(promotionPolicy));
         _customerMappingStore = customerMappingStore;
+        _customerResolver = customerResolver;
     }
 
     public async Task<CheckoutSessionResult> CreatePaymentSessionAsync(
@@ -62,7 +65,8 @@ public sealed class StripeCheckoutSessionCreator
             return new CheckoutSessionResult(null, promotionResult);
         }
 
-        SessionCreateOptions options = BuildPaymentOptions(request);
+        string? customerId = await ResolveCustomerIdAsync(request.UserId, request.CustomerId, cancellationToken).ConfigureAwait(false);
+        SessionCreateOptions options = BuildPaymentOptions(request, customerId);
         string idempotencyKey = ResolveIdempotencyKey(request.IdempotencyKey, "checkout_payment", request.BusinessPaymentId);
 
         StripeCheckoutSession session = await _client.CreateAsync(options, idempotencyKey, cancellationToken).ConfigureAwait(false);
@@ -77,7 +81,7 @@ public sealed class StripeCheckoutSessionCreator
             null);
 
         await _paymentRecords.SaveAsync(record).ConfigureAwait(false);
-        await SaveCustomerMappingAsync(request.UserId, session.CustomerId).ConfigureAwait(false);
+        await SaveCustomerMappingAsync(request.UserId, session.CustomerId ?? customerId).ConfigureAwait(false);
 
         return new CheckoutSessionResult(session, promotionResult);
     }
@@ -112,7 +116,8 @@ public sealed class StripeCheckoutSessionCreator
             return new CheckoutSessionResult(null, promotionResult);
         }
 
-        SessionCreateOptions options = BuildSubscriptionOptions(request);
+        string? customerId = await ResolveCustomerIdAsync(request.UserId, request.CustomerId, cancellationToken).ConfigureAwait(false);
+        SessionCreateOptions options = BuildSubscriptionOptions(request, customerId);
         string idempotencyKey = ResolveIdempotencyKey(request.IdempotencyKey, "checkout_subscription", request.BusinessSubscriptionId);
 
         StripeCheckoutSession session = await _client.CreateAsync(options, idempotencyKey, cancellationToken).ConfigureAwait(false);
@@ -124,11 +129,11 @@ public sealed class StripeCheckoutSessionCreator
             request.UserId,
             request.BusinessSubscriptionId,
             SubscriptionStatus.Incomplete,
-            session.CustomerId ?? request.CustomerId,
+            session.CustomerId ?? customerId,
             session.SubscriptionId);
 
         await _subscriptionRecords.SaveAsync(record).ConfigureAwait(false);
-        await SaveCustomerMappingAsync(request.UserId, session.CustomerId ?? request.CustomerId).ConfigureAwait(false);
+        await SaveCustomerMappingAsync(request.UserId, session.CustomerId ?? customerId).ConfigureAwait(false);
 
         return new CheckoutSessionResult(session, promotionResult);
     }
@@ -146,6 +151,21 @@ public sealed class StripeCheckoutSessionCreator
         }
 
         await _customerMappingStore.SaveMappingAsync(userId, customerId).ConfigureAwait(false);
+    }
+
+    private async Task<string?> ResolveCustomerIdAsync(
+        string userId,
+        string? providedCustomerId,
+        CancellationToken cancellationToken)
+    {
+        if (_customerResolver == null)
+        {
+            return providedCustomerId;
+        }
+
+        return await _customerResolver
+            .GetOrCreateCustomerIdAsync(userId, providedCustomerId, null, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     private async Task<PromotionValidationResult> EvaluatePromotionAsync(
@@ -230,7 +250,7 @@ public sealed class StripeCheckoutSessionCreator
         }
     }
 
-    private SessionCreateOptions BuildPaymentOptions(CheckoutPaymentSessionRequest request)
+    private SessionCreateOptions BuildPaymentOptions(CheckoutPaymentSessionRequest request, string? customerId)
     {
         Dictionary<string, string> metadata = new Dictionary<string, string>(StripeMetadataMapper.CreateForUser(request.UserId));
         SessionCreateOptions options = new SessionCreateOptions
@@ -238,7 +258,7 @@ public sealed class StripeCheckoutSessionCreator
             Mode = "payment",
             SuccessUrl = request.SuccessUrl,
             CancelUrl = request.CancelUrl,
-            Customer = request.CustomerId,
+            Customer = customerId,
             ClientReferenceId = request.BusinessPaymentId,
             AllowPromotionCodes = _options.EnablePromotions && request.AllowPromotionCodes,
             Metadata = metadata,
@@ -276,7 +296,7 @@ public sealed class StripeCheckoutSessionCreator
         return options;
     }
 
-    private SessionCreateOptions BuildSubscriptionOptions(CheckoutSubscriptionSessionRequest request)
+    private SessionCreateOptions BuildSubscriptionOptions(CheckoutSubscriptionSessionRequest request, string? customerId)
     {
         Dictionary<string, string> metadata = new Dictionary<string, string>(StripeMetadataMapper.CreateForUser(request.UserId));
         SessionCreateOptions options = new SessionCreateOptions
@@ -284,7 +304,7 @@ public sealed class StripeCheckoutSessionCreator
             Mode = "subscription",
             SuccessUrl = request.SuccessUrl,
             CancelUrl = request.CancelUrl,
-            Customer = request.CustomerId,
+            Customer = customerId,
             ClientReferenceId = request.BusinessSubscriptionId,
             AllowPromotionCodes = _options.EnablePromotions && request.AllowPromotionCodes,
             Metadata = metadata,

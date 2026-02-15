@@ -9,6 +9,14 @@ public sealed class StripeKitOptions
     public bool EnablePromotions { get; init; } = true;
     public bool EnableRefunds { get; init; } = false;
     public bool EnableWebhooks { get; init; } = true;
+
+    public void Validate()
+    {
+        if ((EnablePayments || EnableBilling) && !EnableWebhooks)
+        {
+            throw new InvalidOperationException("Webhooks must be enabled when Payments or Billing modules are enabled.");
+        }
+    }
 }
 
 internal static class StripeKitDiagnostics

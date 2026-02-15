@@ -23,14 +23,9 @@ if (string.IsNullOrWhiteSpace(stripeApiKey))
 
 StripeConfiguration.ApiKey = stripeApiKey;
 
-builder.Services.AddSingleton(new StripeKitOptions
-{
-    EnablePayments = true,
-    EnableBilling = true,
-    EnablePromotions = true,
-    EnableWebhooks = true,
-    EnableRefunds = true
-});
+StripeKitOptions stripeKitOptions = builder.Configuration.GetSection("StripeKit:Modules").Get<StripeKitOptions>() ?? new StripeKitOptions();
+stripeKitOptions.Validate();
+builder.Services.AddSingleton(stripeKitOptions);
 string? dbProviderInvariantName = builder.Configuration["StripeKit:DbProviderInvariantName"];
 string? dbConnectionString = builder.Configuration["StripeKit:DbConnectionString"];
 
@@ -79,7 +74,9 @@ builder.Services.AddSingleton<IStripeEventClient, StripeEventClient>();
 builder.Services.AddSingleton<PaymentIntentService>();
 builder.Services.AddSingleton<InvoiceService>();
 builder.Services.AddSingleton<SubscriptionService>();
+builder.Services.AddSingleton<CustomerService>();
 builder.Services.AddSingleton<IStripeObjectLookup, StripeObjectLookup>();
+builder.Services.AddSingleton<IStripeCustomerResolver, StripeCustomerResolver>();
 builder.Services.AddSingleton<RefundService>();
 builder.Services.AddSingleton<IRefundClient, StripeRefundClient>();
 builder.Services.AddSingleton<StripeRefundCreator>();

@@ -44,6 +44,24 @@ Acceptance:
 - Successful flows emit `StripeKit` activities with correlation tags.
 - README reflects baseline observability behavior.
 
+## Slice plan — Mission completion hardening (2026-02-15, In progress)
+Goal: Close remaining requirement gaps for module toggles, core customer lifecycle, promotions persistence, and docs/test completeness.
+Non-goals: No new production dependencies; no Connect/Portal/PaymentIntents scope expansion.
+Steps:
+1) Make module toggles configuration-driven and enforce invariant: Payments/Billing require Webhooks.
+2) Add Core get-or-create customer flow (`user_id` -> Stripe customer + mapping + metadata).
+3) Persist promotion application outcome + Stripe promotion identifiers in internal records.
+4) Add structured logs on core flows with required correlation fields.
+5) Expand integration tests to cover webhook state updates in addition to verify + dedupe.
+6) Update README with required event list, idempotency key strategy, and feature toggle usage.
+Risks: Scope creep across modules; keep changes minimal and anchored to requirement clauses.
+Acceptance:
+- `dotnet test StripeKit.NET.sln`
+- Sample API can toggle modules by configuration without code changes.
+- Customer provisioning is deterministic and mapping-backed.
+- Promotion usage is persisted for payment/subscription records.
+- README fully covers required operational setup.
+
 ## 1) Purpose
 StripeKit.NET is a reference-quality .NET toolkit for integrating Stripe **hosted Checkout** to support:
 - One-time payments

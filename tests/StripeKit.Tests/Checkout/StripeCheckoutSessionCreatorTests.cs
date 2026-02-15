@@ -174,6 +174,42 @@ public class StripeCheckoutSessionCreatorTests
         Assert.Equal("pi_123", GetTag(captured!, "payment_intent_id"));
     }
 
+    [Fact]
+    public async Task CreatePaymentSessionAsync_WithoutCustomerId_UsesResolvedCustomerId()
+    {
+        FakeCheckoutSessionClient client = new FakeCheckoutSessionClient();
+        IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
+        ISubscriptionRecordStore subscriptionStore = new InMemorySubscriptionRecordStore();
+        StripeKitOptions options = new StripeKitOptions();
+        IPromotionEligibilityPolicy policy = new AllowAllPromotionEligibilityPolicy();
+        FakeCustomerResolver customerResolver = new FakeCustomerResolver("cus_resolved_1");
+        StripeCheckoutSessionCreator creator = new StripeCheckoutSessionCreator(
+            client,
+            paymentStore,
+            subscriptionStore,
+            options,
+            policy,
+            null,
+            customerResolver);
+
+        CheckoutPaymentSessionRequest request = new CheckoutPaymentSessionRequest
+        {
+            UserId = "user_customer_1",
+            BusinessPaymentId = "pay_customer_1",
+            Amount = 1500,
+            Currency = "usd",
+            ItemName = "Test item",
+            SuccessUrl = "https://example.com/success",
+            CancelUrl = "https://example.com/cancel"
+        };
+
+        CheckoutSessionResult result = await creator.CreatePaymentSessionAsync(request);
+
+        Assert.NotNull(result.Session);
+        Assert.NotNull(client.LastOptions);
+        Assert.Equal("cus_resolved_1", client.LastOptions!.Customer);
+    }
+
     private sealed class FakeCheckoutSessionClient : ICheckoutSessionClient
     {
         public SessionCreateOptions? LastOptions { get; private set; }
@@ -203,6 +239,25 @@ public class StripeCheckoutSessionCreatorTests
         public Task<PromotionValidationResult> EvaluateAsync(PromotionContext context, CancellationToken cancellationToken)
         {
             return Task.FromResult(PromotionValidationResult.Invalid("Denied"));
+        }
+    }
+
+    private sealed class FakeCustomerResolver : IStripeCustomerResolver
+    {
+        private readonly string _customerId;
+
+        public FakeCustomerResolver(string customerId)
+        {
+            _customerId = customerId;
+        }
+
+        public Task<string> GetOrCreateCustomerIdAsync(
+            string userId,
+            string? providedCustomerId = null,
+            string? idempotencyKey = null,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(_customerId);
         }
     }
 

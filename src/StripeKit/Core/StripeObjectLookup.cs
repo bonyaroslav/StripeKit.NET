@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using Stripe;
 
@@ -107,5 +109,77 @@ public sealed class StripeObjectLookup : IStripeObjectLookup
         }
 
         return null;
+    }
+}
+
+public interface IStripeCustomerResolver
+{
+    Task<string> GetOrCreateCustomerIdAsync(
+        string userId,
+        string? providedCustomerId = null,
+        string? idempotencyKey = null,
+        CancellationToken cancellationToken = default);
+}
+
+public sealed class StripeCustomerResolver : IStripeCustomerResolver
+{
+    private readonly CustomerService _customerService;
+    private readonly ICustomerMappingStore _customerMappingStore;
+
+    public StripeCustomerResolver(CustomerService customerService, ICustomerMappingStore customerMappingStore)
+    {
+        _customerService = customerService ?? throw new ArgumentNullException(nameof(customerService));
+        _customerMappingStore = customerMappingStore ?? throw new ArgumentNullException(nameof(customerMappingStore));
+    }
+
+    public async Task<string> GetOrCreateCustomerIdAsync(
+        string userId,
+        string? providedCustomerId = null,
+        string? idempotencyKey = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            throw new ArgumentException("User ID is required.", nameof(userId));
+        }
+
+        if (!string.IsNullOrWhiteSpace(providedCustomerId))
+        {
+            await _customerMappingStore.SaveMappingAsync(userId, providedCustomerId).ConfigureAwait(false);
+            return providedCustomerId;
+        }
+
+        string? mappedCustomerId = await _customerMappingStore.GetCustomerIdAsync(userId).ConfigureAwait(false);
+        if (!string.IsNullOrWhiteSpace(mappedCustomerId))
+        {
+            return mappedCustomerId;
+        }
+
+        string requestIdempotencyKey = string.IsNullOrWhiteSpace(idempotencyKey)
+            ? IdempotencyKeyFactory.Create("customer", userId)
+            : idempotencyKey;
+
+        CustomerCreateOptions createOptions = new CustomerCreateOptions
+        {
+            Metadata = new Dictionary<string, string>(StripeMetadataMapper.CreateForUser(userId))
+        };
+
+        RequestOptions requestOptions = new RequestOptions
+        {
+            IdempotencyKey = requestIdempotencyKey
+        };
+
+        Customer customer = await _customerService
+            .CreateAsync(createOptions, requestOptions, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (string.IsNullOrWhiteSpace(customer.Id))
+        {
+            throw new InvalidOperationException("Stripe customer ID is required.");
+        }
+
+        await _customerMappingStore.SaveMappingAsync(userId, customer.Id).ConfigureAwait(false);
+
+        return customer.Id;
     }
 }
