@@ -1,5 +1,5 @@
 # StripeKit.NET
-Minimal, production-correct Stripe integration toolkit for .NET: webhooks, idempotency, billing state — packaged as a small library + a tiny sample API.
+Minimal, production-correct Stripe integration toolkit for .NET: webhooks, idempotency, billing state - packaged as a small library + a tiny sample API.
 
 ## Why
 Stripe integrations usually break in 3 places:
