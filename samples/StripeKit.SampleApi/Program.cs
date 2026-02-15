@@ -1,6 +1,7 @@
 using System.Text;
 using Stripe;
 using Stripe.Checkout;
+using StripeKit;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -123,7 +124,11 @@ app.MapPost("/webhooks/stripe", async (
     string payload = await reader.ReadToEndAsync();
     request.Body.Position = 0;
 
-    string signature = request.Headers["Stripe-Signature"];
+    string signature = request.Headers["Stripe-Signature"].ToString();
+    if (string.IsNullOrWhiteSpace(signature))
+    {
+        return Results.BadRequest(new { status = "failed", error = "Stripe-Signature header is required." });
+    }
 
     try
     {
