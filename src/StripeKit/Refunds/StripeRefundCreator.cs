@@ -85,6 +85,14 @@ public sealed class StripeRefundCreator
             refund.Id);
 
         await _refundRecords.SaveAsync(record).ConfigureAwait(false);
+        StripeKitDiagnostics.EmitLog(
+            "refund.created",
+            (StripeKitDiagnosticTags.UserId, request.UserId),
+            (StripeKitDiagnosticTags.BusinessRefundId, request.BusinessRefundId),
+            (StripeKitDiagnosticTags.BusinessPaymentId, request.BusinessPaymentId),
+            (StripeKitDiagnosticTags.PaymentIntentId, paymentRecord.PaymentIntentId),
+            (StripeKitDiagnosticTags.RefundId, refund.Id),
+            ("refund_status", refund.Status.ToString()));
 
         return new RefundResult(refund);
     }

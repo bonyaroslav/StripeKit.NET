@@ -19,7 +19,10 @@ public sealed class SubscriptionRecord
         string businessSubscriptionId,
         SubscriptionStatus status,
         string? customerId,
-        string? subscriptionId)
+        string? subscriptionId,
+        PromotionOutcome? promotionOutcome = null,
+        string? promotionCouponId = null,
+        string? promotionCodeId = null)
     {
         if (string.IsNullOrWhiteSpace(userId))
         {
@@ -36,6 +39,9 @@ public sealed class SubscriptionRecord
         Status = status;
         CustomerId = NormalizeOptionalId(customerId);
         SubscriptionId = NormalizeOptionalId(subscriptionId);
+        PromotionOutcome = promotionOutcome;
+        PromotionCouponId = NormalizeOptionalId(promotionCouponId);
+        PromotionCodeId = NormalizeOptionalId(promotionCodeId);
     }
 
     public string UserId { get; }
@@ -43,6 +49,9 @@ public sealed class SubscriptionRecord
     public SubscriptionStatus Status { get; }
     public string? CustomerId { get; }
     public string? SubscriptionId { get; }
+    public PromotionOutcome? PromotionOutcome { get; }
+    public string? PromotionCouponId { get; }
+    public string? PromotionCodeId { get; }
 
     private static string? NormalizeOptionalId(string? value)
     {

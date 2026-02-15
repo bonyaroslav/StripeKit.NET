@@ -62,6 +62,14 @@ public sealed class StripeWebhookProcessor
                 existing = new WebhookEventOutcome(false, "Duplicate event without recorded outcome.", DateTimeOffset.UtcNow);
             }
 
+            StripeKitDiagnostics.EmitLog(
+                "webhook.processed",
+                (StripeKitDiagnosticTags.EventId, stripeEvent.Id),
+                (StripeKitDiagnosticTags.EventType, stripeEvent.Type),
+                ("duplicate", true),
+                ("succeeded", existing.Succeeded),
+                ("error", existing.ErrorMessage));
+
             return new WebhookProcessingResult(stripeEvent.Id, stripeEvent.Type, existing, true);
         }
 
@@ -72,6 +80,21 @@ public sealed class StripeWebhookProcessor
         StripeKitDiagnostics.SetTag(activity, "error", outcome.ErrorMessage);
 
         await _eventStore.RecordOutcomeAsync(stripeEvent.Id, outcome).ConfigureAwait(false);
+        StripeKitDiagnostics.EmitLog(
+            "webhook.processed",
+            (StripeKitDiagnosticTags.EventId, stripeEvent.Id),
+            (StripeKitDiagnosticTags.EventType, stripeEvent.Type),
+            (StripeKitDiagnosticTags.UserId, GetTagValue(activity, StripeKitDiagnosticTags.UserId)),
+            (StripeKitDiagnosticTags.BusinessPaymentId, GetTagValue(activity, StripeKitDiagnosticTags.BusinessPaymentId)),
+            (StripeKitDiagnosticTags.BusinessSubscriptionId, GetTagValue(activity, StripeKitDiagnosticTags.BusinessSubscriptionId)),
+            (StripeKitDiagnosticTags.BusinessRefundId, GetTagValue(activity, StripeKitDiagnosticTags.BusinessRefundId)),
+            (StripeKitDiagnosticTags.PaymentIntentId, data.PaymentIntentId),
+            (StripeKitDiagnosticTags.SubscriptionId, data.SubscriptionId),
+            (StripeKitDiagnosticTags.InvoiceId, string.Equals(data.ObjectType, "invoice", StringComparison.Ordinal) ? data.ObjectId : null),
+            (StripeKitDiagnosticTags.RefundId, data.RefundId),
+            ("duplicate", false),
+            ("succeeded", outcome.Succeeded),
+            ("error", outcome.ErrorMessage));
 
         return new WebhookProcessingResult(stripeEvent.Id, stripeEvent.Type, outcome, false);
     }
@@ -114,6 +137,14 @@ public sealed class StripeWebhookProcessor
                 existing = new WebhookEventOutcome(false, "Duplicate event without recorded outcome.", DateTimeOffset.UtcNow);
             }
 
+            StripeKitDiagnostics.EmitLog(
+                "webhook.processed",
+                (StripeKitDiagnosticTags.EventId, stripeEvent.Id),
+                (StripeKitDiagnosticTags.EventType, stripeEvent.Type),
+                ("duplicate", true),
+                ("succeeded", existing.Succeeded),
+                ("error", existing.ErrorMessage));
+
             return new WebhookProcessingResult(stripeEvent.Id, stripeEvent.Type, existing, true);
         }
 
@@ -124,6 +155,21 @@ public sealed class StripeWebhookProcessor
         StripeKitDiagnostics.SetTag(activity, "error", outcome.ErrorMessage);
 
         await _eventStore.RecordOutcomeAsync(stripeEvent.Id, outcome).ConfigureAwait(false);
+        StripeKitDiagnostics.EmitLog(
+            "webhook.processed",
+            (StripeKitDiagnosticTags.EventId, stripeEvent.Id),
+            (StripeKitDiagnosticTags.EventType, stripeEvent.Type),
+            (StripeKitDiagnosticTags.UserId, GetTagValue(activity, StripeKitDiagnosticTags.UserId)),
+            (StripeKitDiagnosticTags.BusinessPaymentId, GetTagValue(activity, StripeKitDiagnosticTags.BusinessPaymentId)),
+            (StripeKitDiagnosticTags.BusinessSubscriptionId, GetTagValue(activity, StripeKitDiagnosticTags.BusinessSubscriptionId)),
+            (StripeKitDiagnosticTags.BusinessRefundId, GetTagValue(activity, StripeKitDiagnosticTags.BusinessRefundId)),
+            (StripeKitDiagnosticTags.PaymentIntentId, data.PaymentIntentId),
+            (StripeKitDiagnosticTags.SubscriptionId, data.SubscriptionId),
+            (StripeKitDiagnosticTags.InvoiceId, string.Equals(data.ObjectType, "invoice", StringComparison.Ordinal) ? data.ObjectId : null),
+            (StripeKitDiagnosticTags.RefundId, data.RefundId),
+            ("duplicate", false),
+            ("succeeded", outcome.Succeeded),
+            ("error", outcome.ErrorMessage));
 
         return new WebhookProcessingResult(stripeEvent.Id, stripeEvent.Type, outcome, false);
     }
@@ -278,7 +324,10 @@ public sealed class StripeWebhookProcessor
             record.BusinessPaymentId,
             status,
             record.PaymentIntentId,
-            record.ChargeId);
+            record.ChargeId,
+            record.PromotionOutcome,
+            record.PromotionCouponId,
+            record.PromotionCodeId);
 
         StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.UserId, record.UserId);
         StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.BusinessPaymentId, record.BusinessPaymentId);
@@ -305,7 +354,10 @@ public sealed class StripeWebhookProcessor
             record.BusinessSubscriptionId,
             status,
             record.CustomerId,
-            record.SubscriptionId);
+            record.SubscriptionId,
+            record.PromotionOutcome,
+            record.PromotionCouponId,
+            record.PromotionCodeId);
 
         StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.UserId, record.UserId);
         StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.BusinessSubscriptionId, record.BusinessSubscriptionId);
@@ -438,6 +490,24 @@ public sealed class StripeWebhookProcessor
         }
 
         return false;
+    }
+
+    private static string? GetTagValue(Activity? activity, string key)
+    {
+        if (activity == null)
+        {
+            return null;
+        }
+
+        foreach (KeyValuePair<string, object?> tag in activity.TagObjects)
+        {
+            if (string.Equals(tag.Key, key, StringComparison.Ordinal))
+            {
+                return tag.Value?.ToString();
+            }
+        }
+
+        return null;
     }
 }
 

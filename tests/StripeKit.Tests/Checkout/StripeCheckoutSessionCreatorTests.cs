@@ -1,5 +1,6 @@
 using System.Threading;
 using System.Diagnostics;
+using System.Text.Json;
 using Stripe.Checkout;
 
 namespace StripeKit.Tests;
@@ -210,8 +211,153 @@ public class StripeCheckoutSessionCreatorTests
         Assert.Equal("cus_resolved_1", client.LastOptions!.Customer);
     }
 
+    [Fact]
+    public async Task CreatePaymentSessionAsync_WithBackendCoupon_PersistsPromotionData()
+    {
+        FakeCheckoutSessionClient client = new FakeCheckoutSessionClient();
+        IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
+        ISubscriptionRecordStore subscriptionStore = new InMemorySubscriptionRecordStore();
+        StripeKitOptions options = new StripeKitOptions();
+        IPromotionEligibilityPolicy policy = new AllowAllPromotionEligibilityPolicy();
+        StripeCheckoutSessionCreator creator = new StripeCheckoutSessionCreator(
+            client,
+            paymentStore,
+            subscriptionStore,
+            options,
+            policy,
+            null);
+
+        CheckoutPaymentSessionRequest request = new CheckoutPaymentSessionRequest
+        {
+            UserId = "user_promo_1",
+            BusinessPaymentId = "pay_promo_1",
+            Amount = 1200,
+            Currency = "usd",
+            ItemName = "Test item",
+            SuccessUrl = "https://example.com/success",
+            CancelUrl = "https://example.com/cancel",
+            Discount = new StripeDiscount
+            {
+                CouponId = "coupon_promo_1"
+            }
+        };
+
+        CheckoutSessionResult result = await creator.CreatePaymentSessionAsync(request);
+        PaymentRecord? stored = await paymentStore.GetByBusinessIdAsync("pay_promo_1");
+
+        Assert.NotNull(result.Session);
+        Assert.NotNull(stored);
+        Assert.Equal(PromotionOutcome.Applied, stored!.PromotionOutcome);
+        Assert.Equal("coupon_promo_1", stored.PromotionCouponId);
+        Assert.Null(stored.PromotionCodeId);
+    }
+
+    [Fact]
+    public async Task CreateSubscriptionSessionAsync_WithBackendPromotionCode_PersistsPromotionData()
+    {
+        FakeCheckoutSessionClient client = new FakeCheckoutSessionClient("cs_sub_1", "sub_321");
+        IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
+        ISubscriptionRecordStore subscriptionStore = new InMemorySubscriptionRecordStore();
+        StripeKitOptions options = new StripeKitOptions();
+        IPromotionEligibilityPolicy policy = new AllowAllPromotionEligibilityPolicy();
+        StripeCheckoutSessionCreator creator = new StripeCheckoutSessionCreator(
+            client,
+            paymentStore,
+            subscriptionStore,
+            options,
+            policy,
+            null);
+
+        CheckoutSubscriptionSessionRequest request = new CheckoutSubscriptionSessionRequest
+        {
+            UserId = "user_promo_2",
+            BusinessSubscriptionId = "sub_promo_2",
+            PriceId = "price_123",
+            SuccessUrl = "https://example.com/success",
+            CancelUrl = "https://example.com/cancel",
+            Discount = new StripeDiscount
+            {
+                PromotionCodeId = "promo_code_2"
+            }
+        };
+
+        CheckoutSessionResult result = await creator.CreateSubscriptionSessionAsync(request);
+        SubscriptionRecord? stored = await subscriptionStore.GetByBusinessIdAsync("sub_promo_2");
+
+        Assert.NotNull(result.Session);
+        Assert.NotNull(stored);
+        Assert.Equal(PromotionOutcome.Applied, stored!.PromotionOutcome);
+        Assert.Null(stored.PromotionCouponId);
+        Assert.Equal("promo_code_2", stored.PromotionCodeId);
+    }
+
+    [Fact]
+    public async Task CreatePaymentSessionAsync_EmitsStructuredLogWithCorrelationFields()
+    {
+        FakeCheckoutSessionClient client = new FakeCheckoutSessionClient();
+        IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
+        ISubscriptionRecordStore subscriptionStore = new InMemorySubscriptionRecordStore();
+        StripeKitOptions options = new StripeKitOptions();
+        IPromotionEligibilityPolicy policy = new AllowAllPromotionEligibilityPolicy();
+        StripeCheckoutSessionCreator creator = new StripeCheckoutSessionCreator(
+            client,
+            paymentStore,
+            subscriptionStore,
+            options,
+            policy,
+            null);
+
+        CheckoutPaymentSessionRequest request = new CheckoutPaymentSessionRequest
+        {
+            UserId = "user_log_1",
+            BusinessPaymentId = "pay_log_1",
+            Amount = 1200,
+            Currency = "usd",
+            ItemName = "Test item",
+            SuccessUrl = "https://example.com/success",
+            CancelUrl = "https://example.com/cancel"
+        };
+
+        CapturingTraceListener listener = new CapturingTraceListener();
+        Trace.Listeners.Add(listener);
+        try
+        {
+            await creator.CreatePaymentSessionAsync(request);
+        }
+        finally
+        {
+            Trace.Listeners.Remove(listener);
+            listener.Dispose();
+        }
+
+        string? json = listener.Messages
+            .LastOrDefault(message => message.Contains("\"event_name\":\"checkout.payment.created\"", StringComparison.Ordinal));
+
+        Assert.NotNull(json);
+
+        using JsonDocument document = JsonDocument.Parse(json!);
+        JsonElement root = document.RootElement;
+
+        Assert.Equal("checkout.payment.created", root.GetProperty("event_name").GetString());
+        Assert.Equal("user_log_1", root.GetProperty("user_id").GetString());
+        Assert.Equal("pay_log_1", root.GetProperty("business_payment_id").GetString());
+        Assert.Equal("cs_123", root.GetProperty("checkout_session_id").GetString());
+        Assert.Equal("pi_123", root.GetProperty("payment_intent_id").GetString());
+        Assert.False(string.IsNullOrWhiteSpace(root.GetProperty("trace_id").GetString()));
+        Assert.False(string.IsNullOrWhiteSpace(root.GetProperty("span_id").GetString()));
+    }
+
     private sealed class FakeCheckoutSessionClient : ICheckoutSessionClient
     {
+        private readonly string _sessionId;
+        private readonly string? _subscriptionId;
+
+        public FakeCheckoutSessionClient(string sessionId = "cs_123", string? subscriptionId = null)
+        {
+            _sessionId = sessionId;
+            _subscriptionId = subscriptionId;
+        }
+
         public SessionCreateOptions? LastOptions { get; private set; }
         public string? LastIdempotencyKey { get; private set; }
 
@@ -224,11 +370,11 @@ public class StripeCheckoutSessionCreatorTests
             LastIdempotencyKey = idempotencyKey;
 
             StripeCheckoutSession session = new StripeCheckoutSession(
-                "cs_123",
+                _sessionId,
                 "https://example.com/checkout",
                 "cus_123",
                 "pi_123",
-                null);
+                _subscriptionId);
 
             return Task.FromResult(session);
         }
@@ -286,5 +432,34 @@ public class StripeCheckoutSessionCreatorTests
         }
 
         return null;
+    }
+
+    private sealed class CapturingTraceListener : TraceListener
+    {
+        public List<string> Messages { get; } = new List<string>();
+
+        public override void Write(string? message)
+        {
+            if (message != null)
+            {
+                Messages.Add(message);
+            }
+        }
+
+        public override void WriteLine(string? message)
+        {
+            if (message != null)
+            {
+                Messages.Add(message);
+            }
+        }
+
+        public override void WriteLine(string? message, string? category)
+        {
+            if (message != null)
+            {
+                Messages.Add(message);
+            }
+        }
     }
 }

@@ -169,23 +169,29 @@ public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore
         {
             await ExecuteNonQueryAsync(
                 connection,
-                "update payment_records set user_id = @user_id, status = @status, payment_intent_id = @payment_intent_id, charge_id = @charge_id where business_payment_id = @business_payment_id",
+                "update payment_records set user_id = @user_id, status = @status, payment_intent_id = @payment_intent_id, charge_id = @charge_id, promotion_outcome = @promotion_outcome, promotion_coupon_id = @promotion_coupon_id, promotion_code_id = @promotion_code_id where business_payment_id = @business_payment_id",
                 ("@user_id", record.UserId),
                 ("@status", record.Status.ToString()),
                 ("@payment_intent_id", record.PaymentIntentId),
                 ("@charge_id", record.ChargeId),
+                ("@promotion_outcome", record.PromotionOutcome?.ToString()),
+                ("@promotion_coupon_id", record.PromotionCouponId),
+                ("@promotion_code_id", record.PromotionCodeId),
                 ("@business_payment_id", record.BusinessPaymentId)).ConfigureAwait(false);
             return;
         }
 
         await ExecuteNonQueryAsync(
             connection,
-            "insert into payment_records (business_payment_id, user_id, status, payment_intent_id, charge_id) values (@business_payment_id, @user_id, @status, @payment_intent_id, @charge_id)",
+            "insert into payment_records (business_payment_id, user_id, status, payment_intent_id, charge_id, promotion_outcome, promotion_coupon_id, promotion_code_id) values (@business_payment_id, @user_id, @status, @payment_intent_id, @charge_id, @promotion_outcome, @promotion_coupon_id, @promotion_code_id)",
             ("@business_payment_id", record.BusinessPaymentId),
             ("@user_id", record.UserId),
             ("@status", record.Status.ToString()),
             ("@payment_intent_id", record.PaymentIntentId),
-            ("@charge_id", record.ChargeId)).ConfigureAwait(false);
+            ("@charge_id", record.ChargeId),
+            ("@promotion_outcome", record.PromotionOutcome?.ToString()),
+            ("@promotion_coupon_id", record.PromotionCouponId),
+            ("@promotion_code_id", record.PromotionCodeId)).ConfigureAwait(false);
     }
 
     Task<PaymentRecord?> IPaymentRecordStore.GetByBusinessIdAsync(string businessPaymentId)
@@ -203,7 +209,7 @@ public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore
         using DbConnection connection = await OpenConnectionAsync().ConfigureAwait(false);
         using DbCommand command = CreateCommand(
             connection,
-            "select user_id, status, payment_intent_id, charge_id from payment_records where business_payment_id = @business_payment_id",
+            "select user_id, status, payment_intent_id, charge_id, promotion_outcome, promotion_coupon_id, promotion_code_id from payment_records where business_payment_id = @business_payment_id",
             ("@business_payment_id", businessPaymentId));
 
         using DbDataReader reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
@@ -216,9 +222,13 @@ public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore
         string statusText = reader.GetString(1);
         string? paymentIntentId = reader.IsDBNull(2) ? null : reader.GetString(2);
         string? chargeId = reader.IsDBNull(3) ? null : reader.GetString(3);
+        string? promotionOutcomeText = reader.IsDBNull(4) ? null : reader.GetString(4);
+        string? promotionCouponId = reader.IsDBNull(5) ? null : reader.GetString(5);
+        string? promotionCodeId = reader.IsDBNull(6) ? null : reader.GetString(6);
 
         PaymentStatus status = ParsePaymentStatus(statusText);
-        return new PaymentRecord(userId, businessPaymentId, status, paymentIntentId, chargeId);
+        PromotionOutcome? promotionOutcome = ParsePromotionOutcome(promotionOutcomeText);
+        return new PaymentRecord(userId, businessPaymentId, status, paymentIntentId, chargeId, promotionOutcome, promotionCouponId, promotionCodeId);
     }
 
     public async Task<PaymentRecord?> GetByPaymentIntentIdAsync(string paymentIntentId)
@@ -260,23 +270,29 @@ public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore
         {
             await ExecuteNonQueryAsync(
                 connection,
-                "update subscription_records set user_id = @user_id, status = @status, customer_id = @customer_id, subscription_id = @subscription_id where business_subscription_id = @business_subscription_id",
+                "update subscription_records set user_id = @user_id, status = @status, customer_id = @customer_id, subscription_id = @subscription_id, promotion_outcome = @promotion_outcome, promotion_coupon_id = @promotion_coupon_id, promotion_code_id = @promotion_code_id where business_subscription_id = @business_subscription_id",
                 ("@user_id", record.UserId),
                 ("@status", record.Status.ToString()),
                 ("@customer_id", record.CustomerId),
                 ("@subscription_id", record.SubscriptionId),
+                ("@promotion_outcome", record.PromotionOutcome?.ToString()),
+                ("@promotion_coupon_id", record.PromotionCouponId),
+                ("@promotion_code_id", record.PromotionCodeId),
                 ("@business_subscription_id", record.BusinessSubscriptionId)).ConfigureAwait(false);
             return;
         }
 
         await ExecuteNonQueryAsync(
             connection,
-            "insert into subscription_records (business_subscription_id, user_id, status, customer_id, subscription_id) values (@business_subscription_id, @user_id, @status, @customer_id, @subscription_id)",
+            "insert into subscription_records (business_subscription_id, user_id, status, customer_id, subscription_id, promotion_outcome, promotion_coupon_id, promotion_code_id) values (@business_subscription_id, @user_id, @status, @customer_id, @subscription_id, @promotion_outcome, @promotion_coupon_id, @promotion_code_id)",
             ("@business_subscription_id", record.BusinessSubscriptionId),
             ("@user_id", record.UserId),
             ("@status", record.Status.ToString()),
             ("@customer_id", record.CustomerId),
-            ("@subscription_id", record.SubscriptionId)).ConfigureAwait(false);
+            ("@subscription_id", record.SubscriptionId),
+            ("@promotion_outcome", record.PromotionOutcome?.ToString()),
+            ("@promotion_coupon_id", record.PromotionCouponId),
+            ("@promotion_code_id", record.PromotionCodeId)).ConfigureAwait(false);
     }
 
     Task<SubscriptionRecord?> ISubscriptionRecordStore.GetByBusinessIdAsync(string businessSubscriptionId)
@@ -294,7 +310,7 @@ public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore
         using DbConnection connection = await OpenConnectionAsync().ConfigureAwait(false);
         using DbCommand command = CreateCommand(
             connection,
-            "select user_id, status, customer_id, subscription_id from subscription_records where business_subscription_id = @business_subscription_id",
+            "select user_id, status, customer_id, subscription_id, promotion_outcome, promotion_coupon_id, promotion_code_id from subscription_records where business_subscription_id = @business_subscription_id",
             ("@business_subscription_id", businessSubscriptionId));
 
         using DbDataReader reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
@@ -307,9 +323,13 @@ public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore
         string statusText = reader.GetString(1);
         string? customerId = reader.IsDBNull(2) ? null : reader.GetString(2);
         string? subscriptionId = reader.IsDBNull(3) ? null : reader.GetString(3);
+        string? promotionOutcomeText = reader.IsDBNull(4) ? null : reader.GetString(4);
+        string? promotionCouponId = reader.IsDBNull(5) ? null : reader.GetString(5);
+        string? promotionCodeId = reader.IsDBNull(6) ? null : reader.GetString(6);
 
         SubscriptionStatus status = ParseSubscriptionStatus(statusText);
-        return new SubscriptionRecord(userId, businessSubscriptionId, status, customerId, subscriptionId);
+        PromotionOutcome? promotionOutcome = ParsePromotionOutcome(promotionOutcomeText);
+        return new SubscriptionRecord(userId, businessSubscriptionId, status, customerId, subscriptionId, promotionOutcome, promotionCouponId, promotionCodeId);
     }
 
     public async Task<SubscriptionRecord?> GetBySubscriptionIdAsync(string subscriptionId)
@@ -534,5 +554,20 @@ public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore
         }
 
         return RefundStatus.Pending;
+    }
+
+    private static PromotionOutcome? ParsePromotionOutcome(string? outcomeText)
+    {
+        if (string.IsNullOrWhiteSpace(outcomeText))
+        {
+            return null;
+        }
+
+        if (Enum.TryParse(outcomeText, true, out PromotionOutcome outcome))
+        {
+            return outcome;
+        }
+
+        return null;
     }
 }

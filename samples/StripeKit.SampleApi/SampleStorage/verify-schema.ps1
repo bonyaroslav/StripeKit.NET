@@ -16,7 +16,10 @@ $requiredSnippets = @(
     "create table if not exists webhook_events",
     "create table if not exists payment_records",
     "create table if not exists subscription_records",
-    "create table if not exists refund_records"
+    "create table if not exists refund_records",
+    "promotion_outcome",
+    "promotion_coupon_id",
+    "promotion_code_id"
 )
 
 $missing = @()

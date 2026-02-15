@@ -78,10 +78,22 @@ public sealed class StripeCheckoutSessionCreator
             request.BusinessPaymentId,
             PaymentStatus.Pending,
             session.PaymentIntentId,
-            null);
+            null,
+            request.Discount == null ? null : promotionResult.Outcome,
+            request.Discount?.CouponId,
+            request.Discount?.PromotionCodeId);
 
         await _paymentRecords.SaveAsync(record).ConfigureAwait(false);
         await SaveCustomerMappingAsync(request.UserId, session.CustomerId ?? customerId).ConfigureAwait(false);
+        StripeKitDiagnostics.EmitLog(
+            "checkout.payment.created",
+            (StripeKitDiagnosticTags.UserId, request.UserId),
+            (StripeKitDiagnosticTags.BusinessPaymentId, request.BusinessPaymentId),
+            (StripeKitDiagnosticTags.CheckoutSessionId, session.Id),
+            (StripeKitDiagnosticTags.PaymentIntentId, session.PaymentIntentId),
+            ("promotion_outcome", request.Discount == null ? null : promotionResult.Outcome.ToString()),
+            ("promotion_coupon_id", request.Discount?.CouponId),
+            ("promotion_code_id", request.Discount?.PromotionCodeId));
 
         return new CheckoutSessionResult(session, promotionResult);
     }
@@ -130,10 +142,23 @@ public sealed class StripeCheckoutSessionCreator
             request.BusinessSubscriptionId,
             SubscriptionStatus.Incomplete,
             session.CustomerId ?? customerId,
-            session.SubscriptionId);
+            session.SubscriptionId,
+            request.Discount == null ? null : promotionResult.Outcome,
+            request.Discount?.CouponId,
+            request.Discount?.PromotionCodeId);
 
         await _subscriptionRecords.SaveAsync(record).ConfigureAwait(false);
         await SaveCustomerMappingAsync(request.UserId, session.CustomerId ?? customerId).ConfigureAwait(false);
+        StripeKitDiagnostics.EmitLog(
+            "checkout.subscription.created",
+            (StripeKitDiagnosticTags.UserId, request.UserId),
+            (StripeKitDiagnosticTags.BusinessSubscriptionId, request.BusinessSubscriptionId),
+            (StripeKitDiagnosticTags.CheckoutSessionId, session.Id),
+            (StripeKitDiagnosticTags.SubscriptionId, session.SubscriptionId),
+            (StripeKitDiagnosticTags.CustomerId, session.CustomerId ?? customerId),
+            ("promotion_outcome", request.Discount == null ? null : promotionResult.Outcome.ToString()),
+            ("promotion_coupon_id", request.Discount?.CouponId),
+            ("promotion_code_id", request.Discount?.PromotionCodeId));
 
         return new CheckoutSessionResult(session, promotionResult);
     }

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 
 namespace StripeKit;
 
@@ -32,6 +33,39 @@ internal static class StripeKitDiagnostics
         }
 
         activity.SetTag(key, value);
+    }
+
+    internal static void EmitLog(string eventName, params (string Key, object? Value)[] fields)
+    {
+        if (string.IsNullOrWhiteSpace(eventName))
+        {
+            return;
+        }
+
+        Dictionary<string, object?> payload = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["event_name"] = eventName
+        };
+
+        Activity? activity = Activity.Current;
+        if (activity != null)
+        {
+            payload["trace_id"] = activity.TraceId.ToString();
+            payload["span_id"] = activity.SpanId.ToString();
+        }
+
+        foreach ((string key, object? value) in fields)
+        {
+            if (string.IsNullOrWhiteSpace(key) || value == null)
+            {
+                continue;
+            }
+
+            payload[key] = value;
+        }
+
+        string json = JsonSerializer.Serialize(payload);
+        Trace.WriteLine(json, ActivitySourceName);
     }
 }
 

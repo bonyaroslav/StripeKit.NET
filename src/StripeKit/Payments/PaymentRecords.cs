@@ -19,7 +19,10 @@ public sealed class PaymentRecord
         string businessPaymentId,
         PaymentStatus status,
         string? paymentIntentId,
-        string? chargeId)
+        string? chargeId,
+        PromotionOutcome? promotionOutcome = null,
+        string? promotionCouponId = null,
+        string? promotionCodeId = null)
     {
         if (string.IsNullOrWhiteSpace(userId))
         {
@@ -36,6 +39,9 @@ public sealed class PaymentRecord
         Status = status;
         PaymentIntentId = NormalizeOptionalId(paymentIntentId);
         ChargeId = NormalizeOptionalId(chargeId);
+        PromotionOutcome = promotionOutcome;
+        PromotionCouponId = NormalizeOptionalId(promotionCouponId);
+        PromotionCodeId = NormalizeOptionalId(promotionCodeId);
     }
 
     public string UserId { get; }
@@ -43,6 +49,9 @@ public sealed class PaymentRecord
     public PaymentStatus Status { get; }
     public string? PaymentIntentId { get; }
     public string? ChargeId { get; }
+    public PromotionOutcome? PromotionOutcome { get; }
+    public string? PromotionCouponId { get; }
+    public string? PromotionCodeId { get; }
 
     private static string? NormalizeOptionalId(string? value)
     {

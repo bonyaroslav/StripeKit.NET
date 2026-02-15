@@ -157,6 +157,17 @@ public sealed class StripeEventReconciler
         activity?.SetTag("failed", failed);
         StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.LastEventId, lastEventId);
         activity?.SetTag("has_more", events.HasMore);
+        StripeKitDiagnostics.EmitLog(
+            "reconcile.completed",
+            ("total", total),
+            ("processed", processed),
+            ("duplicates", duplicates),
+            ("failed", failed),
+            (StripeKitDiagnosticTags.LastEventId, lastEventId),
+            ("has_more", events.HasMore),
+            ("limit", limit),
+            ("created_after", createdAfter.ToString("O")),
+            (StripeKitDiagnosticTags.StartingAfterEventId, request?.StartingAfterEventId));
 
         return new ReconciliationResult(total, processed, duplicates, failed, lastEventId, events.HasMore);
     }
