@@ -201,6 +201,116 @@ public class StripeEventReconcilerTests
         Assert.Equal("evt_obs_4", GetTag(captured!, "last_event_id"));
     }
 
+    [Fact]
+    public async Task ReconcileAsync_WithStartingAfterEventId_EmitsStartingAfterTag()
+    {
+        StripeKitOptions options = new StripeKitOptions();
+        IWebhookEventStore eventStore = new InMemoryWebhookEventStore();
+        IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
+        ISubscriptionRecordStore subscriptionStore = new InMemorySubscriptionRecordStore();
+        IRefundRecordStore refundStore = new InMemoryRefundRecordStore();
+        WebhookSignatureVerifier verifier = new WebhookSignatureVerifier();
+        IStripeObjectLookup objectLookup = new FakeStripeObjectLookup();
+        StripeWebhookProcessor processor = new StripeWebhookProcessor(verifier, eventStore, paymentStore, subscriptionStore, refundStore, objectLookup, options);
+
+        StripeList<Event> events = new StripeList<Event>
+        {
+            Data = new List<Event>(),
+            HasMore = false
+        };
+
+        IStripeEventClient eventClient = new FakeStripeEventClient(events);
+        StripeEventReconciler reconciler = new StripeEventReconciler(eventClient, processor);
+
+        Activity? captured = null;
+        using ActivityListener listener = CreateListener(activity =>
+        {
+            if (activity.OperationName == "stripekit.reconcile.run")
+            {
+                captured = activity;
+            }
+        });
+
+        await reconciler.ReconcileAsync(new ReconciliationRequest
+        {
+            Limit = 1,
+            CreatedAfter = DateTimeOffset.UtcNow.AddDays(-1),
+            StartingAfterEventId = "evt_cursor_1"
+        });
+
+        Assert.NotNull(captured);
+        Assert.Equal("evt_cursor_1", GetTag(captured!, "starting_after_event_id"));
+    }
+
+    [Fact]
+    public async Task ReconcileAsync_RefundUpdated_UpdatesStatusAndEmitsWebhookTags()
+    {
+        StripeKitOptions options = new StripeKitOptions
+        {
+            EnableRefunds = true
+        };
+        IWebhookEventStore eventStore = new InMemoryWebhookEventStore();
+        IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
+        ISubscriptionRecordStore subscriptionStore = new InMemorySubscriptionRecordStore();
+        IRefundRecordStore refundStore = new InMemoryRefundRecordStore();
+        WebhookSignatureVerifier verifier = new WebhookSignatureVerifier();
+        IStripeObjectLookup objectLookup = new FakeStripeObjectLookup();
+        StripeWebhookProcessor processor = new StripeWebhookProcessor(verifier, eventStore, paymentStore, subscriptionStore, refundStore, objectLookup, options);
+
+        RefundRecord refund = new RefundRecord("user_obs_5", "refund_obs_5", "pay_obs_5", RefundStatus.Pending, "pi_obs_5", "re_obs_5");
+        await refundStore.SaveAsync(refund);
+
+        StripeList<Event> events = new StripeList<Event>
+        {
+            Data = new List<Event>
+            {
+                new Event
+                {
+                    Id = "evt_obs_5",
+                    Type = "refund.updated",
+                    Data = new EventData
+                    {
+                        Object = new Refund
+                        {
+                            Id = "re_obs_5",
+                            Status = "succeeded",
+                            PaymentIntentId = "pi_obs_5"
+                        }
+                    }
+                }
+            },
+            HasMore = false
+        };
+
+        IStripeEventClient eventClient = new FakeStripeEventClient(events);
+        StripeEventReconciler reconciler = new StripeEventReconciler(eventClient, processor);
+
+        Activity? captured = null;
+        using ActivityListener listener = CreateListener(activity =>
+        {
+            if (activity.OperationName == "stripekit.webhook.process")
+            {
+                captured = activity;
+            }
+        });
+
+        ReconciliationResult result = await reconciler.ReconcileAsync(new ReconciliationRequest
+        {
+            Limit = 1,
+            CreatedAfter = DateTimeOffset.UtcNow.AddDays(-1)
+        });
+
+        RefundRecord? updated = await refundStore.GetByRefundIdAsync("re_obs_5");
+
+        Assert.Equal(1, result.Total);
+        Assert.Equal(1, result.Processed);
+        Assert.Equal(RefundStatus.Succeeded, updated!.Status);
+        Assert.Equal("evt_obs_5", GetTag(captured!, "event_id"));
+        Assert.Equal("refund.updated", GetTag(captured!, "event_type"));
+        Assert.Equal("re_obs_5", GetTag(captured!, "refund_id"));
+        Assert.Equal("refund_obs_5", GetTag(captured!, "business_refund_id"));
+    }
+
     private sealed class FakeStripeEventClient : IStripeEventClient
     {
         private readonly StripeList<Event> _events;

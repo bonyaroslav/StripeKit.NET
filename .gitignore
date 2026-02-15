@@ -480,3 +480,7 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# Dotnet CLI local telemetry artifacts
+.dotnet/.dotnet/TelemetryStorageService/
+*.trn
