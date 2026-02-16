@@ -24,4 +24,8 @@
     <ProjectReference Include="..\..\src\StripeKit\StripeKit.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="..\..\samples\StripeKit.SampleApi\SampleStorage\DbStripeKitStore.cs" Link="SampleStorage\DbStripeKitStore.cs" />
+  </ItemGroup>
+
 </Project>

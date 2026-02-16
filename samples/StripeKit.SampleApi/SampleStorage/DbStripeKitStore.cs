@@ -96,7 +96,7 @@ public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore
                 ("@processing_state", "processing")).ConfigureAwait(false);
             return true;
         }
-        catch (DbException)
+        catch (DbException ex) when (IsUniqueConstraintViolation(ex))
         {
             int retried = await ExecuteNonQueryAsync(
                 connection,
@@ -163,8 +163,13 @@ public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore
             return null;
         }
 
-        object succeededValue = reader.GetValue(1);
-        bool succeeded = Convert.ToInt32(succeededValue) == 1;
+        object? succeededValue = reader.GetValue(1);
+        if (succeededValue == null || succeededValue == DBNull.Value)
+        {
+            return null;
+        }
+
+        bool succeeded = ConvertSucceededValue(succeededValue);
         string? errorMessage = reader.IsDBNull(2) ? null : reader.GetString(2);
         string? recordedAtText = reader.IsDBNull(3) ? null : reader.GetString(3);
         DateTimeOffset recordedAt = ParseRecordedAt(recordedAtText);
@@ -590,5 +595,111 @@ public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore
         }
 
         return null;
+    }
+
+    private static bool ConvertSucceededValue(object succeededValue)
+    {
+        if (succeededValue is bool boolValue)
+        {
+            return boolValue;
+        }
+
+        if (succeededValue is byte byteValue)
+        {
+            return byteValue == 1;
+        }
+
+        if (succeededValue is short shortValue)
+        {
+            return shortValue == 1;
+        }
+
+        if (succeededValue is int intValue)
+        {
+            return intValue == 1;
+        }
+
+        if (succeededValue is long longValue)
+        {
+            return longValue == 1;
+        }
+
+        if (succeededValue is string textValue)
+        {
+            if (string.Equals(textValue, "true", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (string.Equals(textValue, "false", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (int.TryParse(textValue, out int parsedInt))
+            {
+                return parsedInt == 1;
+            }
+        }
+
+        throw new InvalidOperationException("Invalid succeeded value in webhook_events row.");
+    }
+
+    private static bool IsUniqueConstraintViolation(DbException exception)
+    {
+        if (exception == null)
+        {
+            return false;
+        }
+
+        Type exceptionType = exception.GetType();
+
+        if (TryGetIntProperty(exceptionType, exception, "SqliteErrorCode", out int sqliteErrorCode) && sqliteErrorCode == 19)
+        {
+            return true;
+        }
+
+        if (TryGetIntProperty(exceptionType, exception, "Number", out int number) && (number == 2601 || number == 2627))
+        {
+            return true;
+        }
+
+        if (TryGetStringProperty(exceptionType, exception, "SqlState", out string? sqlState) &&
+            string.Equals(sqlState, "23505", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryGetIntProperty(Type exceptionType, DbException exception, string propertyName, out int value)
+    {
+        value = 0;
+        object? rawValue = exceptionType.GetProperty(propertyName)?.GetValue(exception);
+        if (rawValue == null)
+        {
+            return false;
+        }
+
+        if (rawValue is int intValue)
+        {
+            value = intValue;
+            return true;
+        }
+
+        if (int.TryParse(rawValue.ToString(), out int parsed))
+        {
+            value = parsed;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryGetStringProperty(Type exceptionType, DbException exception, string propertyName, out string? value)
+    {
+        value = exceptionType.GetProperty(propertyName)?.GetValue(exception)?.ToString();
+        return !string.IsNullOrWhiteSpace(value);
     }
 }
