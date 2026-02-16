@@ -384,6 +384,72 @@ public class StripeWebhookProcessorTests
     }
 
     [Fact]
+    public async Task ProcessAsync_RetryAfterFailure_DoesNotReturnDuplicateAndAppliesOutcome()
+    {
+        string payload = "{\"id\":\"evt_retry_contract_1\",\"object\":\"event\",\"api_version\":\"2022-11-15\",\"created\":1700000000,\"data\":{\"object\":{\"id\":\"pi_retry_contract_1\",\"object\":\"payment_intent\",\"status\":\"succeeded\"}},\"livemode\":false,\"pending_webhooks\":1,\"type\":\"payment_intent.succeeded\"}";
+        string secret = "whsec_test";
+        string header = BuildSignatureHeader(payload, secret);
+
+        StripeKitOptions options = new StripeKitOptions();
+        IWebhookEventStore eventStore = new InMemoryWebhookEventStore();
+        IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
+        ISubscriptionRecordStore subscriptionStore = new InMemorySubscriptionRecordStore();
+        IRefundRecordStore refundStore = new InMemoryRefundRecordStore();
+        WebhookSignatureVerifier verifier = new WebhookSignatureVerifier();
+        IStripeObjectLookup objectLookup = new FakeStripeObjectLookup();
+        StripeWebhookProcessor processor = new StripeWebhookProcessor(verifier, eventStore, paymentStore, subscriptionStore, refundStore, objectLookup, options);
+
+        WebhookProcessingResult first = await processor.ProcessAsync(payload, header, secret);
+        PaymentRecord record = new PaymentRecord("user_retry_contract_1", "pay_retry_contract_1", PaymentStatus.Pending, "pi_retry_contract_1", null);
+        await paymentStore.SaveAsync(record);
+
+        WebhookProcessingResult second = await processor.ProcessAsync(payload, header, secret);
+        PaymentRecord? updated = await paymentStore.GetByPaymentIntentIdAsync("pi_retry_contract_1");
+
+        Assert.NotNull(first.Outcome);
+        Assert.False(first.Outcome!.Succeeded);
+        Assert.False(first.IsDuplicate);
+        Assert.NotNull(second.Outcome);
+        Assert.True(second.Outcome!.Succeeded);
+        Assert.False(second.IsDuplicate);
+        Assert.NotNull(updated);
+        Assert.Equal(PaymentStatus.Succeeded, updated!.Status);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_OutOfOrderGuard_DelayedFailureCannotRegressSucceededPayment()
+    {
+        const string secret = "whsec_test";
+
+        string succeededPayload = "{\"id\":\"evt_order_guard_1\",\"object\":\"event\",\"api_version\":\"2022-11-15\",\"created\":1700000200,\"data\":{\"object\":{\"id\":\"pi_order_guard_1\",\"object\":\"payment_intent\",\"status\":\"succeeded\"}},\"livemode\":false,\"pending_webhooks\":1,\"type\":\"payment_intent.succeeded\"}";
+        string succeededHeader = BuildSignatureHeader(succeededPayload, secret);
+
+        string delayedFailedPayload = "{\"id\":\"evt_order_guard_2\",\"object\":\"event\",\"api_version\":\"2022-11-15\",\"created\":1700000100,\"data\":{\"object\":{\"id\":\"pi_order_guard_1\",\"object\":\"payment_intent\",\"status\":\"requires_payment_method\"}},\"livemode\":false,\"pending_webhooks\":1,\"type\":\"payment_intent.payment_failed\"}";
+        string delayedHeader = BuildSignatureHeader(delayedFailedPayload, secret);
+
+        StripeKitOptions options = new StripeKitOptions();
+        IWebhookEventStore eventStore = new InMemoryWebhookEventStore();
+        IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
+        ISubscriptionRecordStore subscriptionStore = new InMemorySubscriptionRecordStore();
+        IRefundRecordStore refundStore = new InMemoryRefundRecordStore();
+        WebhookSignatureVerifier verifier = new WebhookSignatureVerifier();
+        IStripeObjectLookup objectLookup = new FakeStripeObjectLookup();
+        StripeWebhookProcessor processor = new StripeWebhookProcessor(verifier, eventStore, paymentStore, subscriptionStore, refundStore, objectLookup, options);
+
+        PaymentRecord record = new PaymentRecord("user_order_guard_1", "pay_order_guard_1", PaymentStatus.Pending, "pi_order_guard_1", null);
+        await paymentStore.SaveAsync(record);
+
+        await processor.ProcessAsync(succeededPayload, succeededHeader, secret);
+        await processor.ProcessAsync(delayedFailedPayload, delayedHeader, secret);
+
+        PaymentRecord? updated = await paymentStore.GetByPaymentIntentIdAsync("pi_order_guard_1");
+
+        Assert.NotNull(updated);
+        Assert.Equal(PaymentStatus.Succeeded, updated!.Status);
+        Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1700000200), updated.LastStripeEventCreated);
+    }
+
+    [Fact]
     public async Task ProcessAsync_DuplicateEvent_EmitsDuplicateTag()
     {
         string payload = "{\"id\":\"evt_dup_1\",\"object\":\"event\",\"api_version\":\"2022-11-15\",\"created\":1700000000,\"data\":{\"object\":{\"id\":\"pi_dup_1\",\"object\":\"payment_intent\"}},\"livemode\":false,\"pending_webhooks\":1,\"type\":\"payment_intent.succeeded\"}";
