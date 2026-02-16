@@ -225,35 +225,35 @@ public sealed class StripeWebhookProcessor
                 if (_options.EnablePayments)
                 {
                     string paymentIntentId = await ResolvePaymentIntentIdAsync(data).ConfigureAwait(false);
-                    await UpdatePaymentStatusAsync(paymentIntentId, PaymentStatus.Succeeded).ConfigureAwait(false);
+                    await UpdatePaymentStatusAsync(paymentIntentId, PaymentStatus.Succeeded, data.EventCreated).ConfigureAwait(false);
                 }
                 break;
             case "payment_intent.payment_failed":
                 if (_options.EnablePayments)
                 {
                     string paymentIntentId = await ResolvePaymentIntentIdAsync(data).ConfigureAwait(false);
-                    await UpdatePaymentStatusAsync(paymentIntentId, PaymentStatus.Failed).ConfigureAwait(false);
+                    await UpdatePaymentStatusAsync(paymentIntentId, PaymentStatus.Failed, data.EventCreated).ConfigureAwait(false);
                 }
                 break;
             case "customer.subscription.deleted":
                 if (_options.EnableBilling)
                 {
                     string subscriptionId = await ResolveSubscriptionIdAsync(data).ConfigureAwait(false);
-                    await UpdateSubscriptionStatusAsync(subscriptionId, SubscriptionStatus.Canceled).ConfigureAwait(false);
+                    await UpdateSubscriptionStatusAsync(subscriptionId, SubscriptionStatus.Canceled, data.EventCreated).ConfigureAwait(false);
                 }
                 break;
             case "invoice.payment_succeeded":
                 if (_options.EnableBilling)
                 {
                     string subscriptionId = await ResolveSubscriptionIdAsync(data).ConfigureAwait(false);
-                    await UpdateSubscriptionStatusAsync(subscriptionId, SubscriptionStatus.Active).ConfigureAwait(false);
+                    await UpdateSubscriptionStatusAsync(subscriptionId, SubscriptionStatus.Active, data.EventCreated).ConfigureAwait(false);
                 }
                 break;
             case "invoice.payment_failed":
                 if (_options.EnableBilling)
                 {
                     string subscriptionId = await ResolveSubscriptionIdAsync(data).ConfigureAwait(false);
-                    await UpdateSubscriptionStatusAsync(subscriptionId, SubscriptionStatus.PastDue).ConfigureAwait(false);
+                    await UpdateSubscriptionStatusAsync(subscriptionId, SubscriptionStatus.PastDue, data.EventCreated).ConfigureAwait(false);
                 }
                 break;
             case "customer.subscription.created":
@@ -263,7 +263,7 @@ public sealed class StripeWebhookProcessor
                     if (TryMapSubscriptionStatus(data.ObjectStatus, out SubscriptionStatus status))
                     {
                         string subscriptionId = await ResolveSubscriptionIdAsync(data).ConfigureAwait(false);
-                        await UpdateSubscriptionStatusAsync(subscriptionId, status).ConfigureAwait(false);
+                        await UpdateSubscriptionStatusAsync(subscriptionId, status, data.EventCreated).ConfigureAwait(false);
                     }
                 }
                 break;
@@ -330,7 +330,7 @@ public sealed class StripeWebhookProcessor
         return subscriptionId;
     }
 
-    private async Task UpdatePaymentStatusAsync(string? paymentIntentId, PaymentStatus status)
+    private async Task UpdatePaymentStatusAsync(string? paymentIntentId, PaymentStatus status, DateTimeOffset? eventCreated)
     {
         if (string.IsNullOrWhiteSpace(paymentIntentId))
         {
@@ -343,6 +343,11 @@ public sealed class StripeWebhookProcessor
             throw new InvalidOperationException("Payment record not found for payment_intent id.");
         }
 
+        if (!ShouldApplyPaymentStatus(record, status, eventCreated))
+        {
+            return;
+        }
+
         PaymentRecord updated = new PaymentRecord(
             record.UserId,
             record.BusinessPaymentId,
@@ -351,7 +356,8 @@ public sealed class StripeWebhookProcessor
             record.ChargeId,
             record.PromotionOutcome,
             record.PromotionCouponId,
-            record.PromotionCodeId);
+            record.PromotionCodeId,
+            eventCreated ?? record.LastStripeEventCreated);
 
         StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.UserId, record.UserId);
         StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.BusinessPaymentId, record.BusinessPaymentId);
@@ -360,7 +366,7 @@ public sealed class StripeWebhookProcessor
         await _paymentRecords.SaveAsync(updated).ConfigureAwait(false);
     }
 
-    private async Task UpdateSubscriptionStatusAsync(string? subscriptionId, SubscriptionStatus status)
+    private async Task UpdateSubscriptionStatusAsync(string? subscriptionId, SubscriptionStatus status, DateTimeOffset? eventCreated)
     {
         if (string.IsNullOrWhiteSpace(subscriptionId))
         {
@@ -373,6 +379,11 @@ public sealed class StripeWebhookProcessor
             throw new InvalidOperationException("Subscription record not found for subscription id.");
         }
 
+        if (!ShouldApplySubscriptionStatus(record, status, eventCreated))
+        {
+            return;
+        }
+
         SubscriptionRecord updated = new SubscriptionRecord(
             record.UserId,
             record.BusinessSubscriptionId,
@@ -381,7 +392,8 @@ public sealed class StripeWebhookProcessor
             record.SubscriptionId,
             record.PromotionOutcome,
             record.PromotionCouponId,
-            record.PromotionCodeId);
+            record.PromotionCodeId,
+            eventCreated ?? record.LastStripeEventCreated);
 
         StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.UserId, record.UserId);
         StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.BusinessSubscriptionId, record.BusinessSubscriptionId);
@@ -514,6 +526,95 @@ public sealed class StripeWebhookProcessor
         }
 
         return false;
+    }
+
+    private static bool ShouldApplyPaymentStatus(PaymentRecord record, PaymentStatus incomingStatus, DateTimeOffset? eventCreated)
+    {
+        if (record.Status == PaymentStatus.Canceled && incomingStatus != PaymentStatus.Canceled)
+        {
+            return false;
+        }
+
+        if (record.Status == PaymentStatus.Succeeded && incomingStatus != PaymentStatus.Succeeded)
+        {
+            return false;
+        }
+
+        if (!record.LastStripeEventCreated.HasValue || !eventCreated.HasValue)
+        {
+            return true;
+        }
+
+        if (eventCreated.Value < record.LastStripeEventCreated.Value)
+        {
+            return false;
+        }
+
+        if (eventCreated.Value == record.LastStripeEventCreated.Value)
+        {
+            return GetPaymentStatusPrecedence(incomingStatus) >= GetPaymentStatusPrecedence(record.Status);
+        }
+
+        return true;
+    }
+
+    private static bool ShouldApplySubscriptionStatus(SubscriptionRecord record, SubscriptionStatus incomingStatus, DateTimeOffset? eventCreated)
+    {
+        if (record.Status == SubscriptionStatus.Canceled && incomingStatus != SubscriptionStatus.Canceled)
+        {
+            return false;
+        }
+
+        if (!record.LastStripeEventCreated.HasValue || !eventCreated.HasValue)
+        {
+            return true;
+        }
+
+        if (eventCreated.Value < record.LastStripeEventCreated.Value)
+        {
+            return false;
+        }
+
+        if (eventCreated.Value == record.LastStripeEventCreated.Value)
+        {
+            return GetSubscriptionStatusPrecedence(incomingStatus) >= GetSubscriptionStatusPrecedence(record.Status);
+        }
+
+        return true;
+    }
+
+    private static int GetPaymentStatusPrecedence(PaymentStatus status)
+    {
+        switch (status)
+        {
+            case PaymentStatus.Pending:
+                return 0;
+            case PaymentStatus.Failed:
+                return 1;
+            case PaymentStatus.Succeeded:
+                return 2;
+            case PaymentStatus.Canceled:
+                return 3;
+            default:
+                return -1;
+        }
+    }
+
+    private static int GetSubscriptionStatusPrecedence(SubscriptionStatus status)
+    {
+        switch (status)
+        {
+            case SubscriptionStatus.Incomplete:
+                return 0;
+            case SubscriptionStatus.PastDue:
+                return 1;
+            case SubscriptionStatus.Active:
+                return 2;
+            case SubscriptionStatus.Canceled:
+                return 3;
+            default:
+                return -1;
+        }
     }
 
     private static string? GetTagValue(Activity? activity, string key)

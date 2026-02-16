@@ -58,7 +58,8 @@ public class StripeWebhookProcessorTests
         Activity? captured = null;
         using ActivityListener listener = CreateListener(activity =>
         {
-            if (activity.OperationName == "stripekit.webhook.process")
+            if (activity.OperationName == "stripekit.webhook.process" &&
+                string.Equals(GetTag(activity, "event_id"), "evt_200", StringComparison.Ordinal))
             {
                 captured = activity;
             }
@@ -103,6 +104,74 @@ public class StripeWebhookProcessorTests
 
         Assert.True(result.Outcome!.Succeeded);
         Assert.Equal(SubscriptionStatus.Active, updated!.Status);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_SubscriptionOutOfOrderDeletedThenDelayedInvoiceSuccess_DoesNotReactivate()
+    {
+        const string secret = "whsec_test";
+
+        string deletedPayload = "{\"id\":\"evt_sub_order_1\",\"object\":\"event\",\"api_version\":\"2022-11-15\",\"created\":1700000100,\"data\":{\"object\":{\"id\":\"sub_order_1\",\"object\":\"subscription\",\"status\":\"canceled\"}},\"livemode\":false,\"pending_webhooks\":1,\"type\":\"customer.subscription.deleted\"}";
+        string deletedHeader = BuildSignatureHeader(deletedPayload, secret);
+
+        string delayedInvoiceSuccessPayload = "{\"id\":\"evt_sub_order_2\",\"object\":\"event\",\"api_version\":\"2022-11-15\",\"created\":1700000000,\"data\":{\"object\":{\"id\":\"in_order_1\",\"object\":\"invoice\",\"subscription\":\"sub_order_1\",\"status\":\"paid\"}},\"livemode\":false,\"pending_webhooks\":1,\"type\":\"invoice.payment_succeeded\"}";
+        string delayedHeader = BuildSignatureHeader(delayedInvoiceSuccessPayload, secret);
+
+        StripeKitOptions options = new StripeKitOptions();
+        IWebhookEventStore eventStore = new InMemoryWebhookEventStore();
+        IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
+        ISubscriptionRecordStore subscriptionStore = new InMemorySubscriptionRecordStore();
+        IRefundRecordStore refundStore = new InMemoryRefundRecordStore();
+        WebhookSignatureVerifier verifier = new WebhookSignatureVerifier();
+        IStripeObjectLookup objectLookup = new FakeStripeObjectLookup();
+        StripeWebhookProcessor processor = new StripeWebhookProcessor(verifier, eventStore, paymentStore, subscriptionStore, refundStore, objectLookup, options);
+
+        SubscriptionRecord record = new SubscriptionRecord("user_order_1", "biz_sub_order_1", SubscriptionStatus.Active, "cus_order_1", "sub_order_1");
+        await subscriptionStore.SaveAsync(record);
+
+        WebhookProcessingResult deleted = await processor.ProcessAsync(deletedPayload, deletedHeader, secret);
+        WebhookProcessingResult delayed = await processor.ProcessAsync(delayedInvoiceSuccessPayload, delayedHeader, secret);
+        SubscriptionRecord? updated = await subscriptionStore.GetBySubscriptionIdAsync("sub_order_1");
+
+        Assert.True(deleted.Outcome!.Succeeded);
+        Assert.True(delayed.Outcome!.Succeeded);
+        Assert.NotNull(updated);
+        Assert.Equal(SubscriptionStatus.Canceled, updated!.Status);
+        Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1700000100), updated.LastStripeEventCreated);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_PaymentOutOfOrderSucceededThenDelayedFailed_DoesNotRegress()
+    {
+        const string secret = "whsec_test";
+
+        string succeededPayload = "{\"id\":\"evt_pay_order_1\",\"object\":\"event\",\"api_version\":\"2022-11-15\",\"created\":1700000200,\"data\":{\"object\":{\"id\":\"pi_order_1\",\"object\":\"payment_intent\",\"status\":\"succeeded\"}},\"livemode\":false,\"pending_webhooks\":1,\"type\":\"payment_intent.succeeded\"}";
+        string succeededHeader = BuildSignatureHeader(succeededPayload, secret);
+
+        string delayedFailedPayload = "{\"id\":\"evt_pay_order_2\",\"object\":\"event\",\"api_version\":\"2022-11-15\",\"created\":1700000100,\"data\":{\"object\":{\"id\":\"pi_order_1\",\"object\":\"payment_intent\",\"status\":\"requires_payment_method\"}},\"livemode\":false,\"pending_webhooks\":1,\"type\":\"payment_intent.payment_failed\"}";
+        string delayedHeader = BuildSignatureHeader(delayedFailedPayload, secret);
+
+        StripeKitOptions options = new StripeKitOptions();
+        IWebhookEventStore eventStore = new InMemoryWebhookEventStore();
+        IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
+        ISubscriptionRecordStore subscriptionStore = new InMemorySubscriptionRecordStore();
+        IRefundRecordStore refundStore = new InMemoryRefundRecordStore();
+        WebhookSignatureVerifier verifier = new WebhookSignatureVerifier();
+        IStripeObjectLookup objectLookup = new FakeStripeObjectLookup();
+        StripeWebhookProcessor processor = new StripeWebhookProcessor(verifier, eventStore, paymentStore, subscriptionStore, refundStore, objectLookup, options);
+
+        PaymentRecord record = new PaymentRecord("user_order_2", "biz_pay_order_2", PaymentStatus.Pending, "pi_order_1", null);
+        await paymentStore.SaveAsync(record);
+
+        WebhookProcessingResult succeeded = await processor.ProcessAsync(succeededPayload, succeededHeader, secret);
+        WebhookProcessingResult delayed = await processor.ProcessAsync(delayedFailedPayload, delayedHeader, secret);
+        PaymentRecord? updated = await paymentStore.GetByPaymentIntentIdAsync("pi_order_1");
+
+        Assert.True(succeeded.Outcome!.Succeeded);
+        Assert.True(delayed.Outcome!.Succeeded);
+        Assert.NotNull(updated);
+        Assert.Equal(PaymentStatus.Succeeded, updated!.Status);
+        Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1700000200), updated.LastStripeEventCreated);
     }
 
     [Fact]
@@ -189,7 +258,8 @@ public class StripeWebhookProcessorTests
         Activity? captured = null;
         using ActivityListener listener = CreateListener(activity =>
         {
-            if (activity.OperationName == "stripekit.webhook.process")
+            if (activity.OperationName == "stripekit.webhook.process" &&
+                string.Equals(GetTag(activity, "event_id"), "evt_dup_1", StringComparison.Ordinal))
             {
                 captured = activity;
             }
@@ -223,7 +293,8 @@ public class StripeWebhookProcessorTests
         Activity? captured = null;
         using ActivityListener listener = CreateListener(activity =>
         {
-            if (activity.OperationName == "stripekit.webhook.process")
+            if (activity.OperationName == "stripekit.webhook.process" &&
+                string.Equals(GetTag(activity, "event_id"), "evt_obs_1", StringComparison.Ordinal))
             {
                 captured = activity;
             }
@@ -307,7 +378,8 @@ public class StripeWebhookProcessorTests
         Activity? captured = null;
         using ActivityListener listener = CreateListener(activity =>
         {
-            if (activity.OperationName == "stripekit.webhook.process")
+            if (activity.OperationName == "stripekit.webhook.process" &&
+                string.Equals(GetTag(activity, "event_id"), "evt_refund_200", StringComparison.Ordinal))
             {
                 captured = activity;
             }

@@ -9,6 +9,7 @@ public sealed class StripeWebhookEventData
     private StripeWebhookEventData(
         string id,
         string type,
+        DateTimeOffset? eventCreated,
         string? objectId,
         string? objectType,
         string? objectStatus,
@@ -19,6 +20,7 @@ public sealed class StripeWebhookEventData
     {
         Id = id;
         Type = type;
+        EventCreated = eventCreated;
         ObjectId = objectId;
         ObjectType = objectType;
         ObjectStatus = objectStatus;
@@ -30,6 +32,7 @@ public sealed class StripeWebhookEventData
 
     public string Id { get; }
     public string Type { get; }
+    public DateTimeOffset? EventCreated { get; }
     public string? ObjectId { get; }
     public string? ObjectType { get; }
     public string? ObjectStatus { get; }
@@ -53,6 +56,22 @@ public sealed class StripeWebhookEventData
         if (string.IsNullOrWhiteSpace(stripeEvent.Type))
         {
             throw new ArgumentException("Event type is required.", nameof(stripeEvent));
+        }
+
+        DateTimeOffset? eventCreated = null;
+        if (stripeEvent.Created != default)
+        {
+            DateTime created = stripeEvent.Created;
+            if (created.Kind == DateTimeKind.Unspecified)
+            {
+                created = DateTime.SpecifyKind(created, DateTimeKind.Utc);
+            }
+            else
+            {
+                created = created.ToUniversalTime();
+            }
+
+            eventCreated = new DateTimeOffset(created);
         }
 
         string? objectId = null;
@@ -101,6 +120,7 @@ public sealed class StripeWebhookEventData
         return new StripeWebhookEventData(
             stripeEvent.Id,
             stripeEvent.Type,
+            eventCreated,
             objectId,
             objectType,
             status,
@@ -122,6 +142,7 @@ public sealed class StripeWebhookEventData
 
         string id = GetRequiredString(root, "id");
         string type = GetRequiredString(root, "type");
+        DateTimeOffset? eventCreated = GetOptionalUnixTimestamp(root, "created");
 
         string? objectId = null;
         string? objectType = null;
@@ -157,7 +178,7 @@ public sealed class StripeWebhookEventData
             refundId = objectId;
         }
 
-        return new StripeWebhookEventData(id, type, objectId, objectType, status, subscriptionId, customerId, paymentIntentId, refundId);
+        return new StripeWebhookEventData(id, type, eventCreated, objectId, objectType, status, subscriptionId, customerId, paymentIntentId, refundId);
     }
 
     private static string GetRequiredString(JsonElement root, string propertyName)
@@ -192,5 +213,21 @@ public sealed class StripeWebhookEventData
         }
 
         return value;
+    }
+
+    private static DateTimeOffset? GetOptionalUnixTimestamp(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out JsonElement element) ||
+            element.ValueKind != JsonValueKind.Number)
+        {
+            return null;
+        }
+
+        if (!element.TryGetInt64(out long seconds))
+        {
+            throw new InvalidOperationException("Invalid webhook field: " + propertyName);
+        }
+
+        return DateTimeOffset.FromUnixTimeSeconds(seconds);
     }
 }

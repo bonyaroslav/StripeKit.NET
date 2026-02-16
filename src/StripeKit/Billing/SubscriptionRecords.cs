@@ -22,7 +22,8 @@ public sealed class SubscriptionRecord
         string? subscriptionId,
         PromotionOutcome? promotionOutcome = null,
         string? promotionCouponId = null,
-        string? promotionCodeId = null)
+        string? promotionCodeId = null,
+        DateTimeOffset? lastStripeEventCreated = null)
     {
         if (string.IsNullOrWhiteSpace(userId))
         {
@@ -42,6 +43,7 @@ public sealed class SubscriptionRecord
         PromotionOutcome = promotionOutcome;
         PromotionCouponId = NormalizeOptionalId(promotionCouponId);
         PromotionCodeId = NormalizeOptionalId(promotionCodeId);
+        LastStripeEventCreated = lastStripeEventCreated;
     }
 
     public string UserId { get; }
@@ -52,6 +54,7 @@ public sealed class SubscriptionRecord
     public PromotionOutcome? PromotionOutcome { get; }
     public string? PromotionCouponId { get; }
     public string? PromotionCodeId { get; }
+    public DateTimeOffset? LastStripeEventCreated { get; }
 
     private static string? NormalizeOptionalId(string? value)
     {
