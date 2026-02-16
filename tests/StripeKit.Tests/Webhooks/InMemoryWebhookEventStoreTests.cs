@@ -54,6 +54,22 @@ public class InMemoryWebhookEventStoreTests
     }
 
     [Fact]
+    public async Task TryBeginAsync_FailedOutcome_AllowsRetry()
+    {
+        InMemoryWebhookEventStore store = new InMemoryWebhookEventStore();
+        WebhookEventOutcome failed = new WebhookEventOutcome(false, "transient", DateTimeOffset.UtcNow);
+
+        bool started = await store.TryBeginAsync("evt_retry_store");
+        await store.RecordOutcomeAsync("evt_retry_store", failed);
+        bool retried = await store.TryBeginAsync("evt_retry_store");
+        WebhookEventOutcome? duringRetry = await store.GetOutcomeAsync("evt_retry_store");
+
+        Assert.True(started);
+        Assert.True(retried);
+        Assert.Null(duringRetry);
+    }
+
+    [Fact]
     public async Task TryBeginAsync_EmptyEventId_ThrowsArgumentException()
     {
         InMemoryWebhookEventStore store = new InMemoryWebhookEventStore();

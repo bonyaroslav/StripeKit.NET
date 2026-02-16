@@ -9,6 +9,7 @@ create table if not exists customer_mappings (
 create table if not exists webhook_events (
     event_id text not null primary key,
     started_at_utc text not null,
+    processing_state text not null,
     succeeded integer null,
     error_message text null,
     recorded_at_utc text null

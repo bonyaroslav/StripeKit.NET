@@ -6,7 +6,6 @@ namespace StripeKit;
 
 public sealed class InMemoryWebhookEventStore : IWebhookEventStore
 {
-    // TODO: If needed, enforce "TryBeginAsync must succeed before RecordOutcomeAsync".
     private readonly ConcurrentDictionary<string, WebhookEventRecord> _records = new(StringComparer.Ordinal);
 
     public Task<bool> TryBeginAsync(string eventId)
@@ -16,10 +15,26 @@ public sealed class InMemoryWebhookEventStore : IWebhookEventStore
             throw new ArgumentException("Event ID is required.", nameof(eventId));
         }
 
-        WebhookEventRecord record = new WebhookEventRecord(eventId);
-        bool added = _records.TryAdd(eventId, record);
+        bool started = false;
+        _records.AddOrUpdate(
+            eventId,
+            _ =>
+            {
+                started = true;
+                return WebhookEventRecord.CreateProcessing(eventId);
+            },
+            (_, existing) =>
+            {
+                if (existing.State == WebhookEventState.Failed)
+                {
+                    started = true;
+                    return WebhookEventRecord.CreateProcessing(eventId);
+                }
 
-        return Task.FromResult(added);
+                return existing;
+            });
+
+        return Task.FromResult(started);
     }
 
     public Task RecordOutcomeAsync(string eventId, WebhookEventOutcome outcome)
@@ -36,8 +51,8 @@ public sealed class InMemoryWebhookEventStore : IWebhookEventStore
 
         _records.AddOrUpdate(
             eventId,
-            _ => new WebhookEventRecord(eventId, outcome),
-            (_, existing) => existing.WithOutcome(outcome));
+            _ => WebhookEventRecord.CreateCompleted(eventId, outcome),
+            (_, _) => WebhookEventRecord.CreateCompleted(eventId, outcome));
 
         return Task.CompletedTask;
     }
@@ -59,24 +74,36 @@ public sealed class InMemoryWebhookEventStore : IWebhookEventStore
 
     private sealed class WebhookEventRecord
     {
-        public WebhookEventRecord(string eventId)
+        public WebhookEventRecord(string eventId, WebhookEventState state, WebhookEventOutcome? outcome)
         {
             EventId = eventId;
-        }
-
-        public WebhookEventRecord(string eventId, WebhookEventOutcome outcome)
-        {
-            EventId = eventId;
+            State = state;
             Outcome = outcome;
         }
 
         public string EventId { get; }
-        public WebhookEventOutcome? Outcome { get; private set; }
+        public WebhookEventState State { get; }
+        public WebhookEventOutcome? Outcome { get; }
 
-        public WebhookEventRecord WithOutcome(WebhookEventOutcome outcome)
+        public static WebhookEventRecord CreateProcessing(string eventId)
         {
-            Outcome = outcome;
-            return this;
+            return new WebhookEventRecord(eventId, WebhookEventState.Processing, null);
         }
+
+        public static WebhookEventRecord CreateCompleted(string eventId, WebhookEventOutcome outcome)
+        {
+            WebhookEventState state = outcome.Succeeded
+                ? WebhookEventState.Succeeded
+                : WebhookEventState.Failed;
+
+            return new WebhookEventRecord(eventId, state, outcome);
+        }
+    }
+
+    private enum WebhookEventState
+    {
+        Processing,
+        Succeeded,
+        Failed
     }
 }

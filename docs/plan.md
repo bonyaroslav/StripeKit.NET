@@ -1,5 +1,21 @@
 # StripeKit.NET — High-Level Plan
 
+## Slice plan — Webhook failed-event replay safety (2026-02-16, In progress)
+Goal: Prevent permanent dedupe of failed webhook events and allow safe replay by webhook retries and reconciliation.
+Non-goals: No expansion of supported event types; no new storage dependency.
+Steps:
+1) Add explicit webhook event processing state in event stores (`Processing`, `Succeeded`, `Failed`).
+2) Make `TryBeginAsync` atomically allow `Failed -> Processing` retries while keeping `Succeeded` terminal.
+3) Update webhook processor duplicate handling: only successful prior outcomes are terminal duplicates.
+4) Update sample webhook endpoint to return non-2xx for retryable duplicates (`Processing`/failed-state duplicates).
+5) Add unit tests for "first attempt fails, second delivery retries and succeeds".
+6) Add integration test for reconciliation replay of previously failed event.
+Risks: Race conditions around concurrent retries; keep transitions atomic per event ID.
+Acceptance:
+- `dotnet test tests/StripeKit.Tests/StripeKit.Tests.csproj --filter "ProcessAsync_*Failed*Retry*"`
+- `dotnet test tests/StripeKit.IntegrationTests/StripeKit.IntegrationTests.csproj --filter "ReconcileAsync_*Failed*Replay*"`
+- `dotnet test StripeKit.NET.sln`
+
 ## Slice plan — Core records + stores (2026-02-15, Done)
 Goal: Add minimal payment/subscription records + in-memory stores to complete Phase 2 core contracts.
 Non-goals: No Checkout sessions, no webhooks routing, no Stripe API calls.

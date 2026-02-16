@@ -14,6 +14,7 @@ $content = Get-Content $SchemaPath -Raw
 $requiredSnippets = @(
     "create table if not exists customer_mappings",
     "create table if not exists webhook_events",
+    "processing_state",
     "create table if not exists payment_records",
     "create table if not exists subscription_records",
     "create table if not exists refund_records",

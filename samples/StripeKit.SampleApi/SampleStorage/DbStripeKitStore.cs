@@ -84,19 +84,28 @@ public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore
         }
 
         using DbConnection connection = await OpenConnectionAsync().ConfigureAwait(false);
+        DateTimeOffset startedAt = DateTimeOffset.UtcNow;
 
         try
         {
             await ExecuteNonQueryAsync(
                 connection,
-                "insert into webhook_events (event_id, started_at_utc) values (@event_id, @started_at_utc)",
+                "insert into webhook_events (event_id, started_at_utc, processing_state) values (@event_id, @started_at_utc, @processing_state)",
                 ("@event_id", eventId),
-                ("@started_at_utc", DateTimeOffset.UtcNow.ToString("O"))).ConfigureAwait(false);
+                ("@started_at_utc", startedAt.ToString("O")),
+                ("@processing_state", "processing")).ConfigureAwait(false);
             return true;
         }
         catch (DbException)
         {
-            return false;
+            int retried = await ExecuteNonQueryAsync(
+                connection,
+                "update webhook_events set processing_state = @processing_state, started_at_utc = @started_at_utc, succeeded = null, error_message = null, recorded_at_utc = null where event_id = @event_id and processing_state = @failed_state",
+                ("@processing_state", "processing"),
+                ("@started_at_utc", startedAt.ToString("O")),
+                ("@event_id", eventId),
+                ("@failed_state", "failed")).ConfigureAwait(false);
+            return retried > 0;
         }
     }
 
@@ -116,7 +125,8 @@ public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore
 
         await ExecuteNonQueryAsync(
             connection,
-            "update webhook_events set succeeded = @succeeded, error_message = @error_message, recorded_at_utc = @recorded_at_utc where event_id = @event_id",
+            "update webhook_events set processing_state = @processing_state, succeeded = @succeeded, error_message = @error_message, recorded_at_utc = @recorded_at_utc where event_id = @event_id",
+            ("@processing_state", outcome.Succeeded ? "succeeded" : "failed"),
             ("@succeeded", outcome.Succeeded ? 1 : 0),
             ("@error_message", outcome.ErrorMessage),
             ("@recorded_at_utc", outcome.RecordedAt.ToString("O")),
@@ -133,7 +143,7 @@ public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore
         using DbConnection connection = await OpenConnectionAsync().ConfigureAwait(false);
         using DbCommand command = CreateCommand(
             connection,
-            "select succeeded, error_message, recorded_at_utc from webhook_events where event_id = @event_id",
+            "select processing_state, succeeded, error_message, recorded_at_utc from webhook_events where event_id = @event_id",
             ("@event_id", eventId));
 
         using DbDataReader reader = await command.ExecuteReaderAsync().ConfigureAwait(false);
@@ -142,10 +152,21 @@ public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore
             return null;
         }
 
-        object succeededValue = reader.GetValue(0);
+        string? processingState = reader.IsDBNull(0) ? null : reader.GetString(0);
+        if (string.Equals(processingState, "processing", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        if (reader.IsDBNull(1))
+        {
+            return null;
+        }
+
+        object succeededValue = reader.GetValue(1);
         bool succeeded = Convert.ToInt32(succeededValue) == 1;
-        string? errorMessage = reader.IsDBNull(1) ? null : reader.GetString(1);
-        string? recordedAtText = reader.IsDBNull(2) ? null : reader.GetString(2);
+        string? errorMessage = reader.IsDBNull(2) ? null : reader.GetString(2);
+        string? recordedAtText = reader.IsDBNull(3) ? null : reader.GetString(3);
         DateTimeOffset recordedAt = ParseRecordedAt(recordedAtText);
 
         return new WebhookEventOutcome(succeeded, errorMessage, recordedAt);

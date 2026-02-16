@@ -181,9 +181,14 @@ app.MapPost("/webhooks/stripe", async (
             return Results.Ok(new { status = "duplicate" });
         }
 
-        if (result.Outcome == null || !result.Outcome.Succeeded)
+        if (result.Outcome == null)
         {
-            return Results.BadRequest(new { status = "failed", error = result.Outcome?.ErrorMessage });
+            return Results.StatusCode(StatusCodes.Status409Conflict);
+        }
+
+        if (!result.Outcome.Succeeded)
+        {
+            return Results.StatusCode(StatusCodes.Status409Conflict);
         }
 
         return Results.Ok(new { status = "ok" });

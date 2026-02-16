@@ -21,7 +21,7 @@ Stripe integrations usually break in 3 places:
 ## Guarantees (the “correctness defaults”)
 - POST calls are idempotent (stable business key → idempotency key)
 - Webhooks verified using the raw request body (no “signature failed” surprises)
-- Events are replay-safe (dedupe by event.id)
+- Events are replay-safe (dedupe by `event.id` after successful processing; failed events can be retried)
 - State is webhook-driven; reconciliation repairs gaps
 
 ## Repo layout example
@@ -85,7 +85,7 @@ StripeKit stays small by requiring only a few seams:
 ## Reconciliation (simple by design)
 A scheduled job that:
 - lists recent Stripe events (default: last 30 days, limit 100) and backfills anything you didn’t process
-- reprocesses safely using the same event.id dedupe + idempotent handlers
+- reprocesses safely using the same `event.id` dedupe + idempotent handlers, including previously failed events
 
 (Goal: if a region/network hiccup causes delays or retries, your system converges to the correct state.)
 

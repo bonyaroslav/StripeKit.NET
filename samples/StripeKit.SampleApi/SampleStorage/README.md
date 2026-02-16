@@ -6,6 +6,7 @@ Purpose:
 
 Must-not-break constraints:
 - Webhook dedupe remains keyed by `event_id`.
+- Webhook state tracks processing lifecycle (`processing` / `succeeded` / `failed`) so failed events can retry.
 - Business IDs remain the primary lookup keys for payment/subscription/refund records.
 - Adapter behavior mirrors in-memory stores for save + lookup semantics.
 

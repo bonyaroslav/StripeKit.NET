@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using Stripe;
 
 namespace StripeKit.IntegrationTests;
 
@@ -93,6 +94,78 @@ public class WebhookProcessingIntegrationTests
         Assert.Equal(SubscriptionStatus.PastDue, updated!.Status);
     }
 
+    [Fact]
+    public async Task ReconcileAsync_FirstAttemptFailed_ReplayAppliesOnceAfterRecovery()
+    {
+        StripeKitOptions options = new StripeKitOptions();
+        IWebhookEventStore store = new InMemoryWebhookEventStore();
+        IPaymentRecordStore payments = new InMemoryPaymentRecordStore();
+        ISubscriptionRecordStore subscriptions = new InMemorySubscriptionRecordStore();
+        IRefundRecordStore refunds = new InMemoryRefundRecordStore();
+        WebhookSignatureVerifier verifier = new WebhookSignatureVerifier();
+        IStripeObjectLookup objectLookup = new NoopStripeObjectLookup();
+        StripeWebhookProcessor processor = new StripeWebhookProcessor(verifier, store, payments, subscriptions, refunds, objectLookup, options);
+
+        StripeList<Event> events = new StripeList<Event>
+        {
+            Data = new List<Event>
+            {
+                new Event
+                {
+                    Id = "evt_replay_1",
+                    Type = "payment_intent.succeeded",
+                    Data = new EventData
+                    {
+                        Object = new PaymentIntent
+                        {
+                            Id = "pi_replay_1",
+                            Status = "succeeded"
+                        }
+                    }
+                }
+            },
+            HasMore = false
+        };
+
+        IStripeEventClient eventClient = new StaticStripeEventClient(events);
+        StripeEventReconciler reconciler = new StripeEventReconciler(eventClient, processor);
+
+        ReconciliationResult first = await reconciler.ReconcileAsync(new ReconciliationRequest
+        {
+            Limit = 1,
+            CreatedAfter = DateTimeOffset.UtcNow.AddDays(-1)
+        });
+
+        PaymentRecord record = new PaymentRecord("user_replay_1", "pay_replay_1", PaymentStatus.Pending, "pi_replay_1", null);
+        await payments.SaveAsync(record);
+
+        ReconciliationResult second = await reconciler.ReconcileAsync(new ReconciliationRequest
+        {
+            Limit = 1,
+            CreatedAfter = DateTimeOffset.UtcNow.AddDays(-1)
+        });
+
+        ReconciliationResult third = await reconciler.ReconcileAsync(new ReconciliationRequest
+        {
+            Limit = 1,
+            CreatedAfter = DateTimeOffset.UtcNow.AddDays(-1)
+        });
+
+        PaymentRecord? updated = await payments.GetByPaymentIntentIdAsync("pi_replay_1");
+
+        Assert.Equal(1, first.Total);
+        Assert.Equal(1, first.Failed);
+        Assert.Equal(1, second.Total);
+        Assert.Equal(1, second.Processed);
+        Assert.Equal(0, second.Duplicates);
+        Assert.Equal(0, second.Failed);
+        Assert.Equal(1, third.Total);
+        Assert.Equal(0, third.Processed);
+        Assert.Equal(1, third.Duplicates);
+        Assert.Equal(0, third.Failed);
+        Assert.Equal(PaymentStatus.Succeeded, updated!.Status);
+    }
+
     private sealed class NoopStripeObjectLookup : IStripeObjectLookup
     {
         public Task<string?> GetPaymentIntentIdAsync(string objectId)
@@ -103,6 +176,21 @@ public class WebhookProcessingIntegrationTests
         public Task<string?> GetSubscriptionIdAsync(string objectId)
         {
             return Task.FromResult<string?>(null);
+        }
+    }
+
+    private sealed class StaticStripeEventClient : IStripeEventClient
+    {
+        private readonly StripeList<Event> _events;
+
+        public StaticStripeEventClient(StripeList<Event> events)
+        {
+            _events = events;
+        }
+
+        public Task<StripeList<Event>> ListAsync(EventListOptions options, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(_events);
         }
     }
 

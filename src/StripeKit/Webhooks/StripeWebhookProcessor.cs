@@ -57,9 +57,20 @@ public sealed class StripeWebhookProcessor
         {
             activity?.SetTag("duplicate", true);
             WebhookEventOutcome? existing = await _eventStore.GetOutcomeAsync(stripeEvent.Id).ConfigureAwait(false);
-            if (existing == null)
+            bool terminalDuplicate = IsTerminalDuplicate(existing);
+            if (!terminalDuplicate)
             {
-                existing = new WebhookEventOutcome(false, "Duplicate event without recorded outcome.", DateTimeOffset.UtcNow);
+                WebhookEventOutcome retryable = CreateRetryableDuplicateOutcome(existing);
+                StripeKitDiagnostics.EmitLog(
+                    "webhook.processed",
+                    (StripeKitDiagnosticTags.EventId, stripeEvent.Id),
+                    (StripeKitDiagnosticTags.EventType, stripeEvent.Type),
+                    ("duplicate", true),
+                    ("terminal_duplicate", false),
+                    ("succeeded", retryable.Succeeded),
+                    ("error", retryable.ErrorMessage));
+
+                return new WebhookProcessingResult(stripeEvent.Id, stripeEvent.Type, retryable, false);
             }
 
             StripeKitDiagnostics.EmitLog(
@@ -67,7 +78,8 @@ public sealed class StripeWebhookProcessor
                 (StripeKitDiagnosticTags.EventId, stripeEvent.Id),
                 (StripeKitDiagnosticTags.EventType, stripeEvent.Type),
                 ("duplicate", true),
-                ("succeeded", existing.Succeeded),
+                ("terminal_duplicate", true),
+                ("succeeded", existing!.Succeeded),
                 ("error", existing.ErrorMessage));
 
             return new WebhookProcessingResult(stripeEvent.Id, stripeEvent.Type, existing, true);
@@ -132,9 +144,20 @@ public sealed class StripeWebhookProcessor
         {
             activity?.SetTag("duplicate", true);
             WebhookEventOutcome? existing = await _eventStore.GetOutcomeAsync(stripeEvent.Id).ConfigureAwait(false);
-            if (existing == null)
+            bool terminalDuplicate = IsTerminalDuplicate(existing);
+            if (!terminalDuplicate)
             {
-                existing = new WebhookEventOutcome(false, "Duplicate event without recorded outcome.", DateTimeOffset.UtcNow);
+                WebhookEventOutcome retryable = CreateRetryableDuplicateOutcome(existing);
+                StripeKitDiagnostics.EmitLog(
+                    "webhook.processed",
+                    (StripeKitDiagnosticTags.EventId, stripeEvent.Id),
+                    (StripeKitDiagnosticTags.EventType, stripeEvent.Type),
+                    ("duplicate", true),
+                    ("terminal_duplicate", false),
+                    ("succeeded", retryable.Succeeded),
+                    ("error", retryable.ErrorMessage));
+
+                return new WebhookProcessingResult(stripeEvent.Id, stripeEvent.Type, retryable, false);
             }
 
             StripeKitDiagnostics.EmitLog(
@@ -142,7 +165,8 @@ public sealed class StripeWebhookProcessor
                 (StripeKitDiagnosticTags.EventId, stripeEvent.Id),
                 (StripeKitDiagnosticTags.EventType, stripeEvent.Type),
                 ("duplicate", true),
-                ("succeeded", existing.Succeeded),
+                ("terminal_duplicate", true),
+                ("succeeded", existing!.Succeeded),
                 ("error", existing.ErrorMessage));
 
             return new WebhookProcessingResult(stripeEvent.Id, stripeEvent.Type, existing, true);
@@ -508,6 +532,24 @@ public sealed class StripeWebhookProcessor
         }
 
         return null;
+    }
+
+    private static bool IsTerminalDuplicate(WebhookEventOutcome? existingOutcome)
+    {
+        return existingOutcome != null && existingOutcome.Succeeded;
+    }
+
+    private static WebhookEventOutcome CreateRetryableDuplicateOutcome(WebhookEventOutcome? existingOutcome)
+    {
+        if (existingOutcome != null && !existingOutcome.Succeeded)
+        {
+            return existingOutcome;
+        }
+
+        return new WebhookEventOutcome(
+            false,
+            "Event is already processing. Retry delivery.",
+            DateTimeOffset.UtcNow);
     }
 }
 
