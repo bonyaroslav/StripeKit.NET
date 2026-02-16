@@ -73,6 +73,7 @@ public sealed class StripeEventReconciler
         "customer.subscription.deleted",
         "invoice.payment_succeeded",
         "invoice.payment_failed",
+        "checkout.session.completed",
         "refund.created",
         "refund.updated",
         "refund.failed"

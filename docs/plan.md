@@ -1,5 +1,20 @@
 # StripeKit.NET — High-Level Plan
 
+## Slice plan — Null-ID checkout webhook correlation fallback (2026-02-16, In progress)
+Goal: Correlate webhook updates when Checkout creation persisted records before Stripe returned `payment_intent`/`subscription` IDs.
+Non-goals: No new dependencies; no expansion beyond minimal correlation/backfill event handling.
+Steps:
+1) Persist business anchors in Checkout metadata (`business_payment_id`, `business_subscription_id`) while retaining `client_reference_id`.
+2) Extend webhook event parsing to read business anchors from metadata and Checkout Session client reference.
+3) Add webhook fallback lookup by business IDs when Stripe object ID lookup misses.
+4) Process `checkout.session.completed` to backfill Stripe IDs onto existing records.
+5) Include reconciliation support for `checkout.session.completed` replay.
+6) Add tests covering null Stripe IDs at create time and successful webhook correlation via business metadata.
+Risks: Mixed-mode Checkout session payloads could carry incomplete fields; keep backfill idempotent and non-destructive.
+Acceptance:
+- `dotnet test tests/StripeKit.Tests/StripeKit.Tests.csproj --filter "Create*Null*Id*Webhook*Correlat*"`
+- `dotnet test StripeKit.NET.sln`
+
 ## Slice plan — Out-of-order webhook state safety (2026-02-16, Done)
 Goal: Prevent stale Stripe events from regressing payment/subscription state when deliveries arrive out of order.
 Non-goals: No new storage dependency; no expansion of supported webhook event types.

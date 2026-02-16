@@ -100,11 +100,15 @@ Minimum events expected by StripeKit v1:
 - `customer.subscription.deleted`
 - `invoice.payment_succeeded`
 - `invoice.payment_failed`
+- `checkout.session.completed`
 - `refund.created`
 - `refund.updated`
 - `refund.failed`
 
 These should be enabled on your Stripe webhook endpoint that targets `/webhooks/stripe`.
+
+Correlation note:
+- StripeKit writes `business_payment_id` / `business_subscription_id` metadata on Checkout create paths and uses those anchors as webhook fallback correlation when Stripe IDs were initially null.
 
 ## Idempotency key strategy
 StripeKit supports caller-provided idempotency keys and generates deterministic defaults when omitted.

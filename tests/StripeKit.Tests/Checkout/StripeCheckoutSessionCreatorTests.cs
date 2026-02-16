@@ -1,6 +1,8 @@
 using System.Threading;
 using System.Diagnostics;
 using System.Text.Json;
+using System.Security.Cryptography;
+using System.Text;
 using Stripe.Checkout;
 
 namespace StripeKit.Tests;
@@ -347,15 +349,137 @@ public class StripeCheckoutSessionCreatorTests
         Assert.False(string.IsNullOrWhiteSpace(root.GetProperty("span_id").GetString()));
     }
 
+    [Fact]
+    public async Task CreatePaymentSessionAsync_NullStripeId_WebhookCorrelationByBusinessMetadata_UpdatesRecord()
+    {
+        const string secret = "whsec_test";
+        FakeCheckoutSessionClient client = new FakeCheckoutSessionClient(paymentIntentId: null);
+        IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
+        ISubscriptionRecordStore subscriptionStore = new InMemorySubscriptionRecordStore();
+        StripeKitOptions options = new StripeKitOptions();
+        IPromotionEligibilityPolicy policy = new AllowAllPromotionEligibilityPolicy();
+        StripeCheckoutSessionCreator creator = new StripeCheckoutSessionCreator(
+            client,
+            paymentStore,
+            subscriptionStore,
+            options,
+            policy,
+            null);
+
+        CheckoutPaymentSessionRequest request = new CheckoutPaymentSessionRequest
+        {
+            UserId = "user_null_pi_1",
+            BusinessPaymentId = "pay_null_pi_1",
+            Amount = 1200,
+            Currency = "usd",
+            ItemName = "Test item",
+            SuccessUrl = "https://example.com/success",
+            CancelUrl = "https://example.com/cancel"
+        };
+
+        await creator.CreatePaymentSessionAsync(request);
+
+        PaymentRecord? before = await paymentStore.GetByBusinessIdAsync("pay_null_pi_1");
+        Assert.NotNull(before);
+        Assert.Null(before!.PaymentIntentId);
+
+        string payload = "{\"id\":\"evt_corr_pi_1\",\"object\":\"event\",\"api_version\":\"2022-11-15\",\"created\":1700000000,\"data\":{\"object\":{\"id\":\"pi_corr_1\",\"object\":\"payment_intent\",\"status\":\"succeeded\",\"metadata\":{\"business_payment_id\":\"pay_null_pi_1\"}}},\"livemode\":false,\"pending_webhooks\":1,\"type\":\"payment_intent.succeeded\"}";
+        string header = BuildSignatureHeader(payload, secret);
+
+        StripeWebhookProcessor processor = new StripeWebhookProcessor(
+            new WebhookSignatureVerifier(),
+            new InMemoryWebhookEventStore(),
+            paymentStore,
+            subscriptionStore,
+            new InMemoryRefundRecordStore(),
+            new FakeStripeObjectLookup(),
+            options);
+
+        WebhookProcessingResult result = await processor.ProcessAsync(payload, header, secret);
+        PaymentRecord? after = await paymentStore.GetByBusinessIdAsync("pay_null_pi_1");
+        PaymentRecord? byPaymentIntent = await paymentStore.GetByPaymentIntentIdAsync("pi_corr_1");
+
+        Assert.NotNull(result.Outcome);
+        Assert.True(result.Outcome!.Succeeded);
+        Assert.NotNull(after);
+        Assert.Equal(PaymentStatus.Succeeded, after!.Status);
+        Assert.Equal("pi_corr_1", after.PaymentIntentId);
+        Assert.Equal("pay_null_pi_1", byPaymentIntent!.BusinessPaymentId);
+    }
+
+    [Fact]
+    public async Task CreateSubscriptionSessionAsync_NullStripeId_WebhookCorrelationByBusinessMetadata_UpdatesRecord()
+    {
+        const string secret = "whsec_test";
+        FakeCheckoutSessionClient client = new FakeCheckoutSessionClient(subscriptionId: null);
+        IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
+        ISubscriptionRecordStore subscriptionStore = new InMemorySubscriptionRecordStore();
+        StripeKitOptions options = new StripeKitOptions();
+        IPromotionEligibilityPolicy policy = new AllowAllPromotionEligibilityPolicy();
+        StripeCheckoutSessionCreator creator = new StripeCheckoutSessionCreator(
+            client,
+            paymentStore,
+            subscriptionStore,
+            options,
+            policy,
+            null);
+
+        CheckoutSubscriptionSessionRequest request = new CheckoutSubscriptionSessionRequest
+        {
+            UserId = "user_null_sub_1",
+            BusinessSubscriptionId = "sub_null_1",
+            PriceId = "price_123",
+            SuccessUrl = "https://example.com/success",
+            CancelUrl = "https://example.com/cancel"
+        };
+
+        await creator.CreateSubscriptionSessionAsync(request);
+
+        SubscriptionRecord? before = await subscriptionStore.GetByBusinessIdAsync("sub_null_1");
+        Assert.NotNull(before);
+        Assert.Null(before!.SubscriptionId);
+
+        string payload = "{\"id\":\"evt_corr_sub_1\",\"object\":\"event\",\"api_version\":\"2022-11-15\",\"created\":1700000100,\"data\":{\"object\":{\"id\":\"sub_corr_1\",\"object\":\"subscription\",\"status\":\"active\",\"customer\":\"cus_corr_1\",\"metadata\":{\"business_subscription_id\":\"sub_null_1\"}}},\"livemode\":false,\"pending_webhooks\":1,\"type\":\"customer.subscription.updated\"}";
+        string header = BuildSignatureHeader(payload, secret);
+
+        StripeWebhookProcessor processor = new StripeWebhookProcessor(
+            new WebhookSignatureVerifier(),
+            new InMemoryWebhookEventStore(),
+            paymentStore,
+            subscriptionStore,
+            new InMemoryRefundRecordStore(),
+            new FakeStripeObjectLookup(),
+            options);
+
+        WebhookProcessingResult result = await processor.ProcessAsync(payload, header, secret);
+        SubscriptionRecord? after = await subscriptionStore.GetByBusinessIdAsync("sub_null_1");
+        SubscriptionRecord? bySubscriptionId = await subscriptionStore.GetBySubscriptionIdAsync("sub_corr_1");
+
+        Assert.NotNull(result.Outcome);
+        Assert.True(result.Outcome!.Succeeded);
+        Assert.NotNull(after);
+        Assert.Equal(SubscriptionStatus.Active, after!.Status);
+        Assert.Equal("sub_corr_1", after.SubscriptionId);
+        Assert.Equal("sub_null_1", bySubscriptionId!.BusinessSubscriptionId);
+    }
+
     private sealed class FakeCheckoutSessionClient : ICheckoutSessionClient
     {
         private readonly string _sessionId;
         private readonly string? _subscriptionId;
+        private readonly string? _paymentIntentId;
+        private readonly string? _customerId;
 
-        public FakeCheckoutSessionClient(string sessionId = "cs_123", string? subscriptionId = null)
+        public FakeCheckoutSessionClient(
+            string sessionId = "cs_123",
+            string? subscriptionId = null,
+            string? paymentIntentId = "pi_123",
+            string? customerId = "cus_123")
         {
             _sessionId = sessionId;
             _subscriptionId = subscriptionId;
+            _paymentIntentId = paymentIntentId;
+            _customerId = customerId;
         }
 
         public SessionCreateOptions? LastOptions { get; private set; }
@@ -372,8 +496,8 @@ public class StripeCheckoutSessionCreatorTests
             StripeCheckoutSession session = new StripeCheckoutSession(
                 _sessionId,
                 "https://example.com/checkout",
-                "cus_123",
-                "pi_123",
+                _customerId,
+                _paymentIntentId,
                 _subscriptionId);
 
             return Task.FromResult(session);
@@ -461,5 +585,37 @@ public class StripeCheckoutSessionCreatorTests
                 Messages.Add(message);
             }
         }
+    }
+
+    private sealed class FakeStripeObjectLookup : IStripeObjectLookup
+    {
+        public Task<string?> GetPaymentIntentIdAsync(string objectId)
+        {
+            return Task.FromResult<string?>(null);
+        }
+
+        public Task<string?> GetSubscriptionIdAsync(string objectId)
+        {
+            return Task.FromResult<string?>(null);
+        }
+    }
+
+    private static string BuildSignatureHeader(string payload, string secret)
+    {
+        long timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        string signature = ComputeSignature(timestamp, payload, secret);
+        return $"t={timestamp},v1={signature}";
+    }
+
+    private static string ComputeSignature(long timestamp, string payload, string secret)
+    {
+        string signedPayload = timestamp + "." + payload;
+        byte[] secretBytes = Encoding.UTF8.GetBytes(secret);
+        byte[] payloadBytes = Encoding.UTF8.GetBytes(signedPayload);
+
+        using HMACSHA256 hmac = new HMACSHA256(secretBytes);
+        byte[] hash = hmac.ComputeHash(payloadBytes);
+
+        return Convert.ToHexString(hash).ToLowerInvariant();
     }
 }

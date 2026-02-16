@@ -278,6 +278,7 @@ public sealed class StripeCheckoutSessionCreator
     private SessionCreateOptions BuildPaymentOptions(CheckoutPaymentSessionRequest request, string? customerId)
     {
         Dictionary<string, string> metadata = new Dictionary<string, string>(StripeMetadataMapper.CreateForUser(request.UserId));
+        metadata[StripeKitDiagnosticTags.BusinessPaymentId] = request.BusinessPaymentId;
         SessionCreateOptions options = new SessionCreateOptions
         {
             Mode = "payment",
@@ -324,6 +325,7 @@ public sealed class StripeCheckoutSessionCreator
     private SessionCreateOptions BuildSubscriptionOptions(CheckoutSubscriptionSessionRequest request, string? customerId)
     {
         Dictionary<string, string> metadata = new Dictionary<string, string>(StripeMetadataMapper.CreateForUser(request.UserId));
+        metadata[StripeKitDiagnosticTags.BusinessSubscriptionId] = request.BusinessSubscriptionId;
         SessionCreateOptions options = new SessionCreateOptions
         {
             Mode = "subscription",
