@@ -1,6 +1,6 @@
 # StripeKit.NET — High-Level Plan
 
-## Slice plan — Out-of-order webhook state safety (2026-02-16, In progress)
+## Slice plan — Out-of-order webhook state safety (2026-02-16, Done)
 Goal: Prevent stale Stripe events from regressing payment/subscription state when deliveries arrive out of order.
 Non-goals: No new storage dependency; no expansion of supported webhook event types.
 Steps:
@@ -8,10 +8,10 @@ Steps:
 2) Persist per-record last-applied Stripe event timestamp on payment/subscription records.
 3) Add freshness guards in webhook status updates to ignore older events for the same record.
 4) Add terminal/precedence transition rules to block regressions (for example canceled subscription or succeeded payment).
-5) Add out-of-order unit tests for delayed invoice/payment failures after newer terminal/success events.
+5) Add out-of-order unit tests for delayed/equal-timestamp invoice/payment events and `ProcessStripeEventAsync` parity.
 Risks: Equal-timestamp events can be ambiguous; resolve with explicit status precedence to keep convergence deterministic.
 Acceptance:
-- `dotnet test tests/StripeKit.Tests/StripeKit.Tests.csproj --filter "ProcessAsync_*OutOfOrder*"`
+- `dotnet test tests/StripeKit.Tests/StripeKit.Tests.csproj --filter "FullyQualifiedName~OutOfOrder"`
 - `dotnet test StripeKit.NET.sln`
 
 ## Slice plan — Webhook failed-event replay safety (2026-02-16, In progress)

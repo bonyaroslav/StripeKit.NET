@@ -22,6 +22,8 @@ Stripe integrations usually break in 3 places:
 - POST calls are idempotent (stable business key → idempotency key)
 - Webhooks verified using the raw request body (no “signature failed” surprises)
 - Events are replay-safe (dedupe by `event.id` after successful processing; failed events can be retried)
+- Payment/subscription transitions are order-aware by Stripe event `created`; stale events are ignored
+- Terminal/precedence rules prevent regressions (for example canceled subscriptions are not reactivated by delayed success events)
 - State is webhook-driven; reconciliation repairs gaps
 
 ## Repo layout example
