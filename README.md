@@ -7,6 +7,28 @@ Stripe integrations usually break in 3 places:
 2) webhook signature/body handling → raw-body verification
 3) billing state drift (late/out-of-order/missed events) → webhook-driven state + reconciliation
 
+## Production Features You Get Today
+StripeKit.NET gives you production-grade billing safeguards out of the box, without heavyweight architecture.
+
+- Verified webhooks from raw body (`Stripe-Signature`) so signature checks are trustworthy.
+- Idempotent webhook processing by Stripe `event.id` so retries and duplicates stay safe.
+- Retry-aware dedupe semantics so failed events can be retried and successful events remain replay-safe.
+- Deterministic idempotency keys for create calls so the same business operation does not double-charge.
+- Checkout support for both one-time payments and subscriptions to ship common billing flows fast.
+- Promotions in both modes: customer-entered promo codes and backend-applied coupon/promo discounts.
+- Business-id + metadata correlation so Stripe objects remain traceable to your internal `user_id`.
+- Out-of-order event guards and status precedence so delayed events cannot regress terminal state.
+- Thin-event fallback lookups so missing webhook fields can be resolved from Stripe objects.
+- Reconciliation pipeline that replays recent events through the same dedupe + handlers to converge state.
+- Refund flow with guardrails so only valid succeeded payments are refunded, idempotently.
+- Built-in observability via `ActivitySource` (`StripeKit`) with correlation tags for debugging and support.
+- Store seams for both in-memory and DB-backed adapters so you can start fast and persist when ready.
+
+## Why Teams Pick StripeKit.NET
+- Engineers: fewer billing edge-case bugs, clear extension seams, and test-backed behavior.
+- Product teams: faster launch with safer defaults for payments, subscriptions, and refunds.
+- Clients/stakeholders: stronger revenue reliability through duplicate protection and state convergence.
+
 ## Modules (enable what you need)
 - Core: Stripe client + mapping + helpers
 - Webhooks: signature verify + event.id dedupe + handler routing
