@@ -5,11 +5,27 @@ namespace StripeKit.SampleApi.SampleStorage;
 
 public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore, IPaymentRecordStore, ISubscriptionRecordStore, IRefundRecordStore
 {
+    private static readonly TimeSpan DefaultProcessingLeaseDuration = TimeSpan.FromMinutes(5);
+
     private readonly Func<DbConnection> _connectionFactory;
+    private readonly Func<DateTimeOffset> _utcNow;
+    private readonly TimeSpan _processingLeaseDuration;
 
     public DbStripeKitStore(Func<DbConnection> connectionFactory)
+        : this(connectionFactory, () => DateTimeOffset.UtcNow, DefaultProcessingLeaseDuration)
+    {
+    }
+
+    public DbStripeKitStore(Func<DbConnection> connectionFactory, Func<DateTimeOffset> utcNow, TimeSpan processingLeaseDuration)
     {
         _connectionFactory = connectionFactory ?? throw new ArgumentNullException(nameof(connectionFactory));
+        _utcNow = utcNow ?? throw new ArgumentNullException(nameof(utcNow));
+        if (processingLeaseDuration <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(processingLeaseDuration), "Processing lease duration must be greater than zero.");
+        }
+
+        _processingLeaseDuration = processingLeaseDuration;
     }
 
     public async Task SaveMappingAsync(string userId, string customerId)
@@ -84,7 +100,8 @@ public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore
         }
 
         using DbConnection connection = await OpenConnectionAsync().ConfigureAwait(false);
-        DateTimeOffset startedAt = DateTimeOffset.UtcNow;
+        DateTimeOffset startedAt = _utcNow();
+        DateTimeOffset staleBefore = startedAt - _processingLeaseDuration;
 
         try
         {
@@ -100,11 +117,13 @@ public sealed class DbStripeKitStore : ICustomerMappingStore, IWebhookEventStore
         {
             int retried = await ExecuteNonQueryAsync(
                 connection,
-                "update webhook_events set processing_state = @processing_state, started_at_utc = @started_at_utc, succeeded = null, error_message = null, recorded_at_utc = null where event_id = @event_id and processing_state = @failed_state",
+                "update webhook_events set processing_state = @processing_state, started_at_utc = @started_at_utc, succeeded = null, error_message = null, recorded_at_utc = null where event_id = @event_id and (processing_state = @failed_state or (processing_state = @existing_processing_state and started_at_utc <= @stale_before_utc))",
                 ("@processing_state", "processing"),
                 ("@started_at_utc", startedAt.ToString("O")),
                 ("@event_id", eventId),
-                ("@failed_state", "failed")).ConfigureAwait(false);
+                ("@failed_state", "failed"),
+                ("@existing_processing_state", "processing"),
+                ("@stale_before_utc", staleBefore.ToString("O"))).ConfigureAwait(false);
             return retried > 0;
         }
     }

@@ -70,6 +70,25 @@ public class InMemoryWebhookEventStoreTests
     }
 
     [Fact]
+    public async Task TryBeginAsync_StaleProcessingLease_AllowsTakeover()
+    {
+        DateTimeOffset now = DateTimeOffset.Parse("2026-02-21T12:00:00Z");
+        InMemoryWebhookEventStore store = new InMemoryWebhookEventStore(() => now, TimeSpan.FromMinutes(1));
+
+        bool first = await store.TryBeginAsync("evt_stale_processing");
+        now = now.AddSeconds(30);
+        bool whileFresh = await store.TryBeginAsync("evt_stale_processing");
+        now = now.AddMinutes(2);
+        bool afterLease = await store.TryBeginAsync("evt_stale_processing");
+        WebhookEventOutcome? outcome = await store.GetOutcomeAsync("evt_stale_processing");
+
+        Assert.True(first);
+        Assert.False(whileFresh);
+        Assert.True(afterLease);
+        Assert.Null(outcome);
+    }
+
+    [Fact]
     public async Task TryBeginAsync_EmptyEventId_ThrowsArgumentException()
     {
         InMemoryWebhookEventStore store = new InMemoryWebhookEventStore();

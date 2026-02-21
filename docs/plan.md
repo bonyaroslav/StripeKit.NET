@@ -1,5 +1,19 @@
 # StripeKit.NET — High-Level Plan
 
+## Slice plan — Webhook processing lease takeover after crash window (2026-02-21, Done)
+Goal: Prevent webhook events from being stuck forever in `processing` when a worker crashes between `TryBeginAsync` and `RecordOutcomeAsync`.
+Non-goals: No new dependencies; no changes to webhook processor public API; no schema changes for sample DB.
+Steps:
+1) Add failing tests for stale in-progress takeover in in-memory and DB webhook event stores.
+2) Add regression test proving `StripeWebhookProcessor` can process a later delivery after lease expiry.
+3) Add lease timeout semantics to `InMemoryWebhookEventStore` with clock injection for deterministic tests.
+4) Add lease timeout semantics to `DbStripeKitStore.TryBeginAsync` by allowing takeover of stale `processing` rows.
+5) Keep successful outcomes terminal and failed outcomes retryable as before.
+Risks: Timeout too short can permit premature takeover; keep a conservative default lease and support override in constructors.
+Acceptance:
+- `dotnet test tests/StripeKit.Tests/StripeKit.Tests.csproj --filter "FullyQualifiedName~Webhook"`
+- `dotnet test StripeKit.NET.sln`
+
 ## Slice plan — Null-ID checkout webhook correlation fallback (2026-02-16, In progress)
 Goal: Correlate webhook updates when Checkout creation persisted records before Stripe returned `payment_intent`/`subscription` IDs.
 Non-goals: No new dependencies; no expansion beyond minimal correlation/backfill event handling.

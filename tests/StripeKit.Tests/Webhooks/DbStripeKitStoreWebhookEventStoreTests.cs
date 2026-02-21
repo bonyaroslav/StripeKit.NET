@@ -38,6 +38,35 @@ public class DbStripeKitStoreWebhookEventStoreTests
         Assert.Null(outcome);
     }
 
+    [Fact]
+    public async Task DbStripeKitStore_TryBeginAsync_StaleProcessingLease_AllowsTakeover()
+    {
+        int callCount = 0;
+        string? updateCommand = null;
+        DateTimeOffset now = DateTimeOffset.Parse("2026-02-21T12:00:00Z");
+
+        TestDbConnection connection = new TestDbConnection(commandText =>
+        {
+            callCount++;
+            if (callCount == 1)
+            {
+                throw new TestUniqueConstraintDbException("duplicate");
+            }
+
+            updateCommand = commandText;
+            return 1;
+        });
+
+        DbStripeKitStore store = new DbStripeKitStore(() => connection, () => now, TimeSpan.FromMinutes(1));
+
+        bool started = await store.TryBeginAsync("evt_db_stale");
+
+        Assert.True(started);
+        Assert.NotNull(updateCommand);
+        Assert.Contains("processing_state = @existing_processing_state", updateCommand, StringComparison.Ordinal);
+        Assert.Contains("started_at_utc <= @stale_before_utc", updateCommand, StringComparison.Ordinal);
+    }
+
     private sealed class TestDbConnection : DbConnection
     {
         private readonly Func<string, int> _executeNonQuery;
@@ -295,11 +324,21 @@ public class DbStripeKitStoreWebhookEventStoreTests
         }
     }
 
-    private sealed class TestDbException : DbException
+    private class TestDbException : DbException
     {
         public TestDbException(string message)
             : base(message)
         {
         }
+    }
+
+    private sealed class TestUniqueConstraintDbException : TestDbException
+    {
+        public TestUniqueConstraintDbException(string message)
+            : base(message)
+        {
+        }
+
+        public int SqliteErrorCode => 19;
     }
 }

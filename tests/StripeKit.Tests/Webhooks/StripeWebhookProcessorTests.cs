@@ -417,6 +417,41 @@ public class StripeWebhookProcessorTests
     }
 
     [Fact]
+    public async Task ProcessAsync_StaleProcessingLease_AllowsLaterDeliveryToTakeOver()
+    {
+        string payload = "{\"id\":\"evt_stale_lease_1\",\"object\":\"event\",\"api_version\":\"2022-11-15\",\"created\":1700000000,\"data\":{\"object\":{\"id\":\"pi_stale_lease_1\",\"object\":\"payment_intent\",\"status\":\"succeeded\"}},\"livemode\":false,\"pending_webhooks\":1,\"type\":\"payment_intent.succeeded\"}";
+        string secret = "whsec_test";
+        string header = BuildSignatureHeader(payload, secret);
+
+        DateTimeOffset now = DateTimeOffset.Parse("2026-02-21T12:00:00Z");
+        IWebhookEventStore eventStore = new InMemoryWebhookEventStore(() => now, TimeSpan.FromMinutes(1));
+        bool firstLease = await eventStore.TryBeginAsync("evt_stale_lease_1");
+
+        StripeKitOptions options = new StripeKitOptions();
+        IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
+        ISubscriptionRecordStore subscriptionStore = new InMemorySubscriptionRecordStore();
+        IRefundRecordStore refundStore = new InMemoryRefundRecordStore();
+        WebhookSignatureVerifier verifier = new WebhookSignatureVerifier();
+        IStripeObjectLookup objectLookup = new FakeStripeObjectLookup();
+        StripeWebhookProcessor processor = new StripeWebhookProcessor(verifier, eventStore, paymentStore, subscriptionStore, refundStore, objectLookup, options);
+
+        PaymentRecord record = new PaymentRecord("user_stale_lease_1", "pay_stale_lease_1", PaymentStatus.Pending, "pi_stale_lease_1", null);
+        await paymentStore.SaveAsync(record);
+
+        WebhookProcessingResult blocked = await processor.ProcessAsync(payload, header, secret);
+        now = now.AddMinutes(2);
+        WebhookProcessingResult recovered = await processor.ProcessAsync(payload, header, secret);
+
+        Assert.True(firstLease);
+        Assert.False(blocked.IsDuplicate);
+        Assert.NotNull(blocked.Outcome);
+        Assert.False(blocked.Outcome!.Succeeded);
+        Assert.NotNull(recovered.Outcome);
+        Assert.True(recovered.Outcome!.Succeeded);
+        Assert.False(recovered.IsDuplicate);
+    }
+
+    [Fact]
     public async Task ProcessAsync_OutOfOrderGuard_DelayedFailureCannotRegressSucceededPayment()
     {
         const string secret = "whsec_test";
