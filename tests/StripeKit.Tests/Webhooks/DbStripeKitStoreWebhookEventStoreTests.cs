@@ -67,6 +67,102 @@ public class DbStripeKitStoreWebhookEventStoreTests
         Assert.Contains("started_at_utc <= @stale_before_utc", updateCommand, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task DbStripeKitStore_SaveAsync_PaymentRecord_PersistsLastStripeEventCreated()
+    {
+        string? insertCommand = null;
+        TestDbConnection connection = new TestDbConnection(commandText =>
+        {
+            insertCommand = commandText;
+            return 1;
+        });
+
+        DbStripeKitStore store = new DbStripeKitStore(() => connection);
+        PaymentRecord record = new PaymentRecord(
+            "user_pay_1",
+            "biz_pay_1",
+            PaymentStatus.Succeeded,
+            "pi_pay_1",
+            null,
+            lastStripeEventCreated: DateTimeOffset.Parse("2026-02-22T12:30:00Z"));
+
+        await store.SaveAsync(record);
+
+        Assert.NotNull(insertCommand);
+        Assert.Contains("last_stripe_event_created_utc", insertCommand, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DbStripeKitStore_GetByBusinessIdAsync_PaymentRecord_HydratesLastStripeEventCreated()
+    {
+        DataTable table = new DataTable();
+        table.Columns.Add("user_id", typeof(string));
+        table.Columns.Add("status", typeof(string));
+        table.Columns.Add("payment_intent_id", typeof(string));
+        table.Columns.Add("charge_id", typeof(string));
+        table.Columns.Add("promotion_outcome", typeof(string));
+        table.Columns.Add("promotion_coupon_id", typeof(string));
+        table.Columns.Add("promotion_code_id", typeof(string));
+        table.Columns.Add("last_stripe_event_created_utc", typeof(string));
+        table.Rows.Add("user_pay_2", "Succeeded", "pi_pay_2", DBNull.Value, DBNull.Value, DBNull.Value, DBNull.Value, "2026-02-22T13:45:00.0000000+00:00");
+
+        TestDbConnection connection = new TestDbConnection(_ => 1, _ => table.CreateDataReader());
+        DbStripeKitStore store = new DbStripeKitStore(() => connection);
+
+        PaymentRecord? record = await ((IPaymentRecordStore)store).GetByBusinessIdAsync("biz_pay_2");
+
+        Assert.NotNull(record);
+        Assert.Equal(DateTimeOffset.Parse("2026-02-22T13:45:00Z"), record!.LastStripeEventCreated);
+    }
+
+    [Fact]
+    public async Task DbStripeKitStore_SaveAsync_SubscriptionRecord_PersistsLastStripeEventCreated()
+    {
+        string? insertCommand = null;
+        TestDbConnection connection = new TestDbConnection(commandText =>
+        {
+            insertCommand = commandText;
+            return 1;
+        });
+
+        DbStripeKitStore store = new DbStripeKitStore(() => connection);
+        SubscriptionRecord record = new SubscriptionRecord(
+            "user_sub_1",
+            "biz_sub_1",
+            SubscriptionStatus.Active,
+            "cus_sub_1",
+            "sub_sub_1",
+            lastStripeEventCreated: DateTimeOffset.Parse("2026-02-22T15:00:00Z"));
+
+        await store.SaveAsync(record);
+
+        Assert.NotNull(insertCommand);
+        Assert.Contains("last_stripe_event_created_utc", insertCommand, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DbStripeKitStore_GetByBusinessIdAsync_SubscriptionRecord_HydratesLastStripeEventCreated()
+    {
+        DataTable table = new DataTable();
+        table.Columns.Add("user_id", typeof(string));
+        table.Columns.Add("status", typeof(string));
+        table.Columns.Add("customer_id", typeof(string));
+        table.Columns.Add("subscription_id", typeof(string));
+        table.Columns.Add("promotion_outcome", typeof(string));
+        table.Columns.Add("promotion_coupon_id", typeof(string));
+        table.Columns.Add("promotion_code_id", typeof(string));
+        table.Columns.Add("last_stripe_event_created_utc", typeof(string));
+        table.Rows.Add("user_sub_2", "Canceled", "cus_sub_2", "sub_sub_2", DBNull.Value, DBNull.Value, DBNull.Value, "2026-02-22T16:10:00.0000000+00:00");
+
+        TestDbConnection connection = new TestDbConnection(_ => 1, _ => table.CreateDataReader());
+        DbStripeKitStore store = new DbStripeKitStore(() => connection);
+
+        SubscriptionRecord? record = await ((ISubscriptionRecordStore)store).GetByBusinessIdAsync("biz_sub_2");
+
+        Assert.NotNull(record);
+        Assert.Equal(DateTimeOffset.Parse("2026-02-22T16:10:00Z"), record!.LastStripeEventCreated);
+    }
+
     private sealed class TestDbConnection : DbConnection
     {
         private readonly Func<string, int> _executeNonQuery;

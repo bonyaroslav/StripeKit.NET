@@ -23,7 +23,8 @@ create table if not exists payment_records (
     charge_id text null,
     promotion_outcome text null,
     promotion_coupon_id text null,
-    promotion_code_id text null
+    promotion_code_id text null,
+    last_stripe_event_created_utc text null
 );
 
 create unique index if not exists ix_payment_records_payment_intent_id
@@ -37,7 +38,8 @@ create table if not exists subscription_records (
     subscription_id text null,
     promotion_outcome text null,
     promotion_coupon_id text null,
-    promotion_code_id text null
+    promotion_code_id text null,
+    last_stripe_event_created_utc text null
 );
 
 create unique index if not exists ix_subscription_records_subscription_id
