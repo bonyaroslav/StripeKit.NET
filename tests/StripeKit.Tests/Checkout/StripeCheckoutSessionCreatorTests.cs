@@ -55,6 +55,49 @@ public class StripeCheckoutSessionCreatorTests
     }
 
     [Fact]
+    public async Task CreateSubscriptionSessionAsync_UsesGeneratedIdempotencyKeyAndStoresRecord()
+    {
+        FakeCheckoutSessionClient client = new FakeCheckoutSessionClient("cs_sub_generated_1", "sub_generated_1");
+        IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
+        ISubscriptionRecordStore subscriptionStore = new InMemorySubscriptionRecordStore();
+        StripeKitOptions options = new StripeKitOptions
+        {
+            EnablePayments = true,
+            EnableBilling = true,
+            EnablePromotions = true,
+            EnableWebhooks = true
+        };
+        IPromotionEligibilityPolicy policy = new AllowAllPromotionEligibilityPolicy();
+        StripeCheckoutSessionCreator creator = new StripeCheckoutSessionCreator(
+            client,
+            paymentStore,
+            subscriptionStore,
+            options,
+            policy,
+            null);
+
+        CheckoutSubscriptionSessionRequest request = new CheckoutSubscriptionSessionRequest
+        {
+            UserId = "user_sub_1",
+            BusinessSubscriptionId = "biz_sub_1",
+            PriceId = "price_123",
+            SuccessUrl = "https://example.com/success",
+            CancelUrl = "https://example.com/cancel"
+        };
+
+        CheckoutSessionResult result = await creator.CreateSubscriptionSessionAsync(request);
+
+        string expectedKey = IdempotencyKeyFactory.Create("checkout_subscription", "biz_sub_1");
+        Assert.Equal(expectedKey, client.LastIdempotencyKey);
+        Assert.NotNull(result.Session);
+
+        SubscriptionRecord? stored = await subscriptionStore.GetByBusinessIdAsync("biz_sub_1");
+        Assert.NotNull(stored);
+        Assert.Equal(SubscriptionStatus.Incomplete, stored!.Status);
+        Assert.Equal("sub_generated_1", stored.SubscriptionId);
+    }
+
+    [Fact]
     public async Task CreateSubscriptionSessionAsync_BillingDisabled_Throws()
     {
         FakeCheckoutSessionClient client = new FakeCheckoutSessionClient();
@@ -126,6 +169,48 @@ public class StripeCheckoutSessionCreatorTests
         };
 
         CheckoutSessionResult result = await creator.CreatePaymentSessionAsync(request);
+
+        Assert.Null(result.Session);
+        Assert.Equal(PromotionOutcome.Invalid, result.PromotionResult.Outcome);
+        Assert.Null(client.LastOptions);
+    }
+
+    [Fact]
+    public async Task CreateSubscriptionSessionAsync_InvalidPromotion_ReturnsNoSession()
+    {
+        FakeCheckoutSessionClient client = new FakeCheckoutSessionClient("cs_sub_denied_1", "sub_denied_1");
+        IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
+        ISubscriptionRecordStore subscriptionStore = new InMemorySubscriptionRecordStore();
+        StripeKitOptions options = new StripeKitOptions
+        {
+            EnablePayments = true,
+            EnableBilling = true,
+            EnablePromotions = true,
+            EnableWebhooks = true
+        };
+        IPromotionEligibilityPolicy policy = new DenyPromotionEligibilityPolicy();
+        StripeCheckoutSessionCreator creator = new StripeCheckoutSessionCreator(
+            client,
+            paymentStore,
+            subscriptionStore,
+            options,
+            policy,
+            null);
+
+        CheckoutSubscriptionSessionRequest request = new CheckoutSubscriptionSessionRequest
+        {
+            UserId = "user_sub_2",
+            BusinessSubscriptionId = "biz_sub_2",
+            PriceId = "price_123",
+            SuccessUrl = "https://example.com/success",
+            CancelUrl = "https://example.com/cancel",
+            Discount = new StripeDiscount
+            {
+                PromotionCodeId = "promo_denied_1"
+            }
+        };
+
+        CheckoutSessionResult result = await creator.CreateSubscriptionSessionAsync(request);
 
         Assert.Null(result.Session);
         Assert.Equal(PromotionOutcome.Invalid, result.PromotionResult.Outcome);
@@ -322,6 +407,7 @@ public class StripeCheckoutSessionCreatorTests
 
         CapturingTraceListener listener = new CapturingTraceListener();
         Trace.Listeners.Add(listener);
+        using ActivityListener activityListener = CreateListener(_ => { });
         try
         {
             await creator.CreatePaymentSessionAsync(request);

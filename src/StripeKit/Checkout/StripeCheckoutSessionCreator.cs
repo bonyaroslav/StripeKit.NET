@@ -35,44 +35,123 @@ public sealed class StripeCheckoutSessionCreator
         _customerResolver = customerResolver;
     }
 
-    public async Task<CheckoutSessionResult> CreatePaymentSessionAsync(
+    public Task<CheckoutSessionResult> CreatePaymentSessionAsync(
         CheckoutPaymentSessionRequest request,
         CancellationToken cancellationToken = default)
+    {
+        CheckoutSessionWorkflow<CheckoutPaymentSessionRequest> workflow = new CheckoutSessionWorkflow<CheckoutPaymentSessionRequest>(
+            EnsurePaymentsEnabled,
+            ValidatePaymentRequest,
+            "stripekit.checkout.create_payment",
+            static request => request.UserId,
+            static request => request.CustomerId,
+            static request => request.Discount,
+            static request => request.BusinessPaymentId,
+            static request => request.IdempotencyKey,
+            "checkout_payment",
+            TagPaymentRequest,
+            BuildPaymentOptions,
+            TagPaymentSession,
+            PersistPaymentSessionAsync,
+            EmitPaymentCreatedLog);
+
+        return CreateSessionAsync(request, workflow, cancellationToken);
+    }
+
+    public Task<CheckoutSessionResult> CreateSubscriptionSessionAsync(
+        CheckoutSubscriptionSessionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        CheckoutSessionWorkflow<CheckoutSubscriptionSessionRequest> workflow = new CheckoutSessionWorkflow<CheckoutSubscriptionSessionRequest>(
+            EnsureBillingEnabled,
+            ValidateSubscriptionRequest,
+            "stripekit.checkout.create_subscription",
+            static request => request.UserId,
+            static request => request.CustomerId,
+            static request => request.Discount,
+            static request => request.BusinessSubscriptionId,
+            static request => request.IdempotencyKey,
+            "checkout_subscription",
+            TagSubscriptionRequest,
+            BuildSubscriptionOptions,
+            TagSubscriptionSession,
+            PersistSubscriptionSessionAsync,
+            EmitSubscriptionCreatedLog);
+
+        return CreateSessionAsync(request, workflow, cancellationToken);
+    }
+
+    private void EnsurePaymentsEnabled()
     {
         if (!_options.EnablePayments)
         {
             throw new InvalidOperationException("Payments module is disabled.");
         }
+    }
+
+    private void EnsureBillingEnabled()
+    {
+        if (!_options.EnableBilling)
+        {
+            throw new InvalidOperationException("Billing module is disabled.");
+        }
+    }
+
+    private async Task<CheckoutSessionResult> CreateSessionAsync<TRequest>(
+        TRequest request,
+        CheckoutSessionWorkflow<TRequest> workflow,
+        CancellationToken cancellationToken)
+        where TRequest : class
+    {
+        workflow.EnsureEnabled();
 
         if (request == null)
         {
             throw new ArgumentNullException(nameof(request));
         }
 
-        ValidatePaymentRequest(request);
+        workflow.Validate(request);
 
-        using Activity? activity = StripeKitDiagnostics.ActivitySource.StartActivity("stripekit.checkout.create_payment");
-        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.UserId, request.UserId);
-        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.BusinessPaymentId, request.BusinessPaymentId);
-        StripeKitDiagnostics.SetTag(activity, "currency", request.Currency);
+        using Activity? activity = StripeKitDiagnostics.ActivitySource.StartActivity(workflow.ActivityName);
+        workflow.TagRequest(activity, request);
 
-        PromotionValidationResult promotionResult = await EvaluatePromotionAsync(request.UserId, request.Discount, cancellationToken)
+        StripeDiscount? discount = workflow.GetDiscount(request);
+        string userId = workflow.GetUserId(request);
+        PromotionValidationResult promotionResult = await EvaluatePromotionAsync(userId, discount, cancellationToken)
             .ConfigureAwait(false);
 
-        if (request.Discount != null && promotionResult.Outcome != PromotionOutcome.Applied)
+        if (discount != null && promotionResult.Outcome != PromotionOutcome.Applied)
         {
             StripeKitDiagnostics.SetTag(activity, "promotion_outcome", promotionResult.Outcome.ToString());
             return new CheckoutSessionResult(null, promotionResult);
         }
 
-        string? customerId = await ResolveCustomerIdAsync(request.UserId, request.CustomerId, cancellationToken).ConfigureAwait(false);
-        SessionCreateOptions options = BuildPaymentOptions(request, customerId);
-        string idempotencyKey = ResolveIdempotencyKey(request.IdempotencyKey, "checkout_payment", request.BusinessPaymentId);
+        string? customerId = await ResolveCustomerIdAsync(
+            userId,
+            workflow.GetProvidedCustomerId(request),
+            cancellationToken).ConfigureAwait(false);
+        SessionCreateOptions options = workflow.BuildOptions(request, customerId);
+        string idempotencyKey = ResolveIdempotencyKey(
+            workflow.GetProvidedIdempotencyKey(request),
+            workflow.IdempotencyScope,
+            workflow.GetBusinessId(request));
 
         StripeCheckoutSession session = await _client.CreateAsync(options, idempotencyKey, cancellationToken).ConfigureAwait(false);
-        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.CheckoutSessionId, session.Id);
-        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.PaymentIntentId, session.PaymentIntentId);
+        string? persistedCustomerId = session.CustomerId ?? customerId;
 
+        workflow.TagSession(activity, session, persistedCustomerId);
+        await workflow.PersistAsync(request, session, promotionResult, persistedCustomerId).ConfigureAwait(false);
+        workflow.EmitLog(request, session, promotionResult, persistedCustomerId);
+
+        return new CheckoutSessionResult(session, promotionResult);
+    }
+
+    private async Task PersistPaymentSessionAsync(
+        CheckoutPaymentSessionRequest request,
+        StripeCheckoutSession session,
+        PromotionValidationResult promotionResult,
+        string? customerId)
+    {
         PaymentRecord record = new PaymentRecord(
             request.UserId,
             request.BusinessPaymentId,
@@ -84,83 +163,91 @@ public sealed class StripeCheckoutSessionCreator
             request.Discount?.PromotionCodeId);
 
         await _paymentRecords.SaveAsync(record).ConfigureAwait(false);
-        await SaveCustomerMappingAsync(request.UserId, session.CustomerId ?? customerId).ConfigureAwait(false);
-        StripeKitDiagnostics.EmitLog(
-            "checkout.payment.created",
-            (StripeKitDiagnosticTags.UserId, request.UserId),
-            (StripeKitDiagnosticTags.BusinessPaymentId, request.BusinessPaymentId),
-            (StripeKitDiagnosticTags.CheckoutSessionId, session.Id),
-            (StripeKitDiagnosticTags.PaymentIntentId, session.PaymentIntentId),
-            ("promotion_outcome", request.Discount == null ? null : promotionResult.Outcome.ToString()),
-            ("promotion_coupon_id", request.Discount?.CouponId),
-            ("promotion_code_id", request.Discount?.PromotionCodeId));
-
-        return new CheckoutSessionResult(session, promotionResult);
+        await SaveCustomerMappingAsync(request.UserId, customerId).ConfigureAwait(false);
     }
 
-    public async Task<CheckoutSessionResult> CreateSubscriptionSessionAsync(
+    private async Task PersistSubscriptionSessionAsync(
         CheckoutSubscriptionSessionRequest request,
-        CancellationToken cancellationToken = default)
+        StripeCheckoutSession session,
+        PromotionValidationResult promotionResult,
+        string? customerId)
     {
-        if (!_options.EnableBilling)
-        {
-            throw new InvalidOperationException("Billing module is disabled.");
-        }
-
-        if (request == null)
-        {
-            throw new ArgumentNullException(nameof(request));
-        }
-
-        ValidateSubscriptionRequest(request);
-
-        using Activity? activity = StripeKitDiagnostics.ActivitySource.StartActivity("stripekit.checkout.create_subscription");
-        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.UserId, request.UserId);
-        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.BusinessSubscriptionId, request.BusinessSubscriptionId);
-        StripeKitDiagnostics.SetTag(activity, "price_id", request.PriceId);
-
-        PromotionValidationResult promotionResult = await EvaluatePromotionAsync(request.UserId, request.Discount, cancellationToken)
-            .ConfigureAwait(false);
-
-        if (request.Discount != null && promotionResult.Outcome != PromotionOutcome.Applied)
-        {
-            StripeKitDiagnostics.SetTag(activity, "promotion_outcome", promotionResult.Outcome.ToString());
-            return new CheckoutSessionResult(null, promotionResult);
-        }
-
-        string? customerId = await ResolveCustomerIdAsync(request.UserId, request.CustomerId, cancellationToken).ConfigureAwait(false);
-        SessionCreateOptions options = BuildSubscriptionOptions(request, customerId);
-        string idempotencyKey = ResolveIdempotencyKey(request.IdempotencyKey, "checkout_subscription", request.BusinessSubscriptionId);
-
-        StripeCheckoutSession session = await _client.CreateAsync(options, idempotencyKey, cancellationToken).ConfigureAwait(false);
-        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.CheckoutSessionId, session.Id);
-        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.SubscriptionId, session.SubscriptionId);
-        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.CustomerId, session.CustomerId);
-
         SubscriptionRecord record = new SubscriptionRecord(
             request.UserId,
             request.BusinessSubscriptionId,
             SubscriptionStatus.Incomplete,
-            session.CustomerId ?? customerId,
+            customerId,
             session.SubscriptionId,
             request.Discount == null ? null : promotionResult.Outcome,
             request.Discount?.CouponId,
             request.Discount?.PromotionCodeId);
 
         await _subscriptionRecords.SaveAsync(record).ConfigureAwait(false);
-        await SaveCustomerMappingAsync(request.UserId, session.CustomerId ?? customerId).ConfigureAwait(false);
+        await SaveCustomerMappingAsync(request.UserId, customerId).ConfigureAwait(false);
+    }
+
+    private static void TagPaymentRequest(Activity? activity, CheckoutPaymentSessionRequest request)
+    {
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.UserId, request.UserId);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.BusinessPaymentId, request.BusinessPaymentId);
+        StripeKitDiagnostics.SetTag(activity, "currency", request.Currency);
+    }
+
+    private static void TagSubscriptionRequest(Activity? activity, CheckoutSubscriptionSessionRequest request)
+    {
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.UserId, request.UserId);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.BusinessSubscriptionId, request.BusinessSubscriptionId);
+        StripeKitDiagnostics.SetTag(activity, "price_id", request.PriceId);
+    }
+
+    private static void TagPaymentSession(Activity? activity, StripeCheckoutSession session, string? customerId)
+    {
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.CheckoutSessionId, session.Id);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.PaymentIntentId, session.PaymentIntentId);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.CustomerId, customerId);
+    }
+
+    private static void TagSubscriptionSession(Activity? activity, StripeCheckoutSession session, string? customerId)
+    {
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.CheckoutSessionId, session.Id);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.SubscriptionId, session.SubscriptionId);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.CustomerId, customerId);
+    }
+
+    private static void EmitPaymentCreatedLog(
+        CheckoutPaymentSessionRequest request,
+        StripeCheckoutSession session,
+        PromotionValidationResult promotionResult,
+        string? customerId)
+    {
+        StripeKitDiagnostics.EmitLog(
+            "checkout.payment.created",
+            (StripeKitDiagnosticTags.UserId, request.UserId),
+            (StripeKitDiagnosticTags.BusinessPaymentId, request.BusinessPaymentId),
+            (StripeKitDiagnosticTags.CheckoutSessionId, session.Id),
+            (StripeKitDiagnosticTags.PaymentIntentId, session.PaymentIntentId),
+            (StripeKitDiagnosticTags.CustomerId, customerId),
+            ("promotion_outcome", request.Discount == null ? null : promotionResult.Outcome.ToString()),
+            ("promotion_coupon_id", request.Discount?.CouponId),
+            ("promotion_code_id", request.Discount?.PromotionCodeId));
+    }
+
+    private static void EmitSubscriptionCreatedLog(
+        CheckoutSubscriptionSessionRequest request,
+        StripeCheckoutSession session,
+        PromotionValidationResult promotionResult,
+        string? customerId)
+    {
         StripeKitDiagnostics.EmitLog(
             "checkout.subscription.created",
             (StripeKitDiagnosticTags.UserId, request.UserId),
             (StripeKitDiagnosticTags.BusinessSubscriptionId, request.BusinessSubscriptionId),
             (StripeKitDiagnosticTags.CheckoutSessionId, session.Id),
             (StripeKitDiagnosticTags.SubscriptionId, session.SubscriptionId),
-            (StripeKitDiagnosticTags.CustomerId, session.CustomerId ?? customerId),
+            (StripeKitDiagnosticTags.CustomerId, customerId),
             ("promotion_outcome", request.Discount == null ? null : promotionResult.Outcome.ToString()),
             ("promotion_coupon_id", request.Discount?.CouponId),
             ("promotion_code_id", request.Discount?.PromotionCodeId));
-
-        return new CheckoutSessionResult(session, promotionResult);
     }
 
     private async Task SaveCustomerMappingAsync(string userId, string? customerId)
@@ -277,88 +364,114 @@ public sealed class StripeCheckoutSessionCreator
 
     private SessionCreateOptions BuildPaymentOptions(CheckoutPaymentSessionRequest request, string? customerId)
     {
-        Dictionary<string, string> metadata = new Dictionary<string, string>(StripeMetadataMapper.CreateForUser(request.UserId));
-        metadata[StripeKitDiagnosticTags.BusinessPaymentId] = request.BusinessPaymentId;
-        SessionCreateOptions options = new SessionCreateOptions
+        Dictionary<string, string> metadata = CreateMetadata(request.UserId, StripeKitDiagnosticTags.BusinessPaymentId, request.BusinessPaymentId);
+        SessionCreateOptions options = CreateBaseOptions(
+            mode: "payment",
+            successUrl: request.SuccessUrl,
+            cancelUrl: request.CancelUrl,
+            customerId: customerId,
+            clientReferenceId: request.BusinessPaymentId,
+            allowPromotionCodes: request.AllowPromotionCodes,
+            metadata: metadata,
+            discount: request.Discount);
+
+        options.LineItems = new List<SessionLineItemOptions>
         {
-            Mode = "payment",
-            SuccessUrl = request.SuccessUrl,
-            CancelUrl = request.CancelUrl,
-            Customer = customerId,
-            ClientReferenceId = request.BusinessPaymentId,
-            AllowPromotionCodes = _options.EnablePromotions && request.AllowPromotionCodes,
-            Metadata = metadata,
-            LineItems = new List<SessionLineItemOptions>
+            new SessionLineItemOptions
             {
-                new SessionLineItemOptions
+                Quantity = 1,
+                PriceData = new SessionLineItemPriceDataOptions
                 {
-                    Quantity = 1,
-                    PriceData = new SessionLineItemPriceDataOptions
+                    Currency = request.Currency.ToLowerInvariant(),
+                    UnitAmount = request.Amount,
+                    ProductData = new SessionLineItemPriceDataProductDataOptions
                     {
-                        Currency = request.Currency.ToLowerInvariant(),
-                        UnitAmount = request.Amount,
-                        ProductData = new SessionLineItemPriceDataProductDataOptions
-                        {
-                            Name = request.ItemName
-                        }
+                        Name = request.ItemName
                     }
                 }
-            },
-            PaymentIntentData = new SessionPaymentIntentDataOptions
-            {
-                Metadata = metadata
             }
         };
-
-        StripeDiscount? discount = request.Discount;
-        if (_options.EnablePromotions && discount != null)
+        options.PaymentIntentData = new SessionPaymentIntentDataOptions
         {
-            options.Discounts = new List<SessionDiscountOptions>
-            {
-                BuildDiscountOption(discount)
-            };
-        }
+            Metadata = metadata
+        };
 
         return options;
     }
 
     private SessionCreateOptions BuildSubscriptionOptions(CheckoutSubscriptionSessionRequest request, string? customerId)
     {
-        Dictionary<string, string> metadata = new Dictionary<string, string>(StripeMetadataMapper.CreateForUser(request.UserId));
-        metadata[StripeKitDiagnosticTags.BusinessSubscriptionId] = request.BusinessSubscriptionId;
-        SessionCreateOptions options = new SessionCreateOptions
+        Dictionary<string, string> metadata = CreateMetadata(request.UserId, StripeKitDiagnosticTags.BusinessSubscriptionId, request.BusinessSubscriptionId);
+        SessionCreateOptions options = CreateBaseOptions(
+            mode: "subscription",
+            successUrl: request.SuccessUrl,
+            cancelUrl: request.CancelUrl,
+            customerId: customerId,
+            clientReferenceId: request.BusinessSubscriptionId,
+            allowPromotionCodes: request.AllowPromotionCodes,
+            metadata: metadata,
+            discount: request.Discount);
+
+        options.LineItems = new List<SessionLineItemOptions>
         {
-            Mode = "subscription",
-            SuccessUrl = request.SuccessUrl,
-            CancelUrl = request.CancelUrl,
-            Customer = customerId,
-            ClientReferenceId = request.BusinessSubscriptionId,
-            AllowPromotionCodes = _options.EnablePromotions && request.AllowPromotionCodes,
-            Metadata = metadata,
-            LineItems = new List<SessionLineItemOptions>
+            new SessionLineItemOptions
             {
-                new SessionLineItemOptions
-                {
-                    Quantity = 1,
-                    Price = request.PriceId
-                }
-            },
-            SubscriptionData = new SessionSubscriptionDataOptions
-            {
-                Metadata = metadata
+                Quantity = 1,
+                Price = request.PriceId
             }
         };
-
-        StripeDiscount? discount = request.Discount;
-        if (_options.EnablePromotions && discount != null)
+        options.SubscriptionData = new SessionSubscriptionDataOptions
         {
-            options.Discounts = new List<SessionDiscountOptions>
-            {
-                BuildDiscountOption(discount)
-            };
-        }
+            Metadata = metadata
+        };
 
         return options;
+    }
+
+    private Dictionary<string, string> CreateMetadata(string userId, string businessKey, string businessId)
+    {
+        Dictionary<string, string> metadata = new Dictionary<string, string>(StripeMetadataMapper.CreateForUser(userId));
+        metadata[businessKey] = businessId;
+        return metadata;
+    }
+
+    private SessionCreateOptions CreateBaseOptions(
+        string mode,
+        string successUrl,
+        string cancelUrl,
+        string? customerId,
+        string clientReferenceId,
+        bool allowPromotionCodes,
+        Dictionary<string, string> metadata,
+        StripeDiscount? discount)
+    {
+        SessionCreateOptions options = new SessionCreateOptions
+        {
+            Mode = mode,
+            SuccessUrl = successUrl,
+            CancelUrl = cancelUrl,
+            Customer = customerId,
+            ClientReferenceId = clientReferenceId,
+            AllowPromotionCodes = _options.EnablePromotions && allowPromotionCodes,
+            Metadata = metadata
+        };
+
+        ApplyDiscount(options, discount);
+
+        return options;
+    }
+
+    private void ApplyDiscount(SessionCreateOptions options, StripeDiscount? discount)
+    {
+        if (!_options.EnablePromotions || discount == null)
+        {
+            return;
+        }
+
+        options.Discounts = new List<SessionDiscountOptions>
+        {
+            BuildDiscountOption(discount)
+        };
     }
 
     private static SessionDiscountOptions BuildDiscountOption(StripeDiscount discount)
@@ -385,5 +498,56 @@ public sealed class StripeCheckoutSessionCreator
         }
 
         return IdempotencyKeyFactory.Create(scope, businessId);
+    }
+
+    private sealed class CheckoutSessionWorkflow<TRequest>
+        where TRequest : class
+    {
+        public CheckoutSessionWorkflow(
+            Action ensureEnabled,
+            Action<TRequest> validate,
+            string activityName,
+            Func<TRequest, string> getUserId,
+            Func<TRequest, string?> getProvidedCustomerId,
+            Func<TRequest, StripeDiscount?> getDiscount,
+            Func<TRequest, string> getBusinessId,
+            Func<TRequest, string?> getProvidedIdempotencyKey,
+            string idempotencyScope,
+            Action<Activity?, TRequest> tagRequest,
+            Func<TRequest, string?, SessionCreateOptions> buildOptions,
+            Action<Activity?, StripeCheckoutSession, string?> tagSession,
+            Func<TRequest, StripeCheckoutSession, PromotionValidationResult, string?, Task> persistAsync,
+            Action<TRequest, StripeCheckoutSession, PromotionValidationResult, string?> emitLog)
+        {
+            EnsureEnabled = ensureEnabled;
+            Validate = validate;
+            ActivityName = activityName;
+            GetUserId = getUserId;
+            GetProvidedCustomerId = getProvidedCustomerId;
+            GetDiscount = getDiscount;
+            GetBusinessId = getBusinessId;
+            GetProvidedIdempotencyKey = getProvidedIdempotencyKey;
+            IdempotencyScope = idempotencyScope;
+            TagRequest = tagRequest;
+            BuildOptions = buildOptions;
+            TagSession = tagSession;
+            PersistAsync = persistAsync;
+            EmitLog = emitLog;
+        }
+
+        public Action EnsureEnabled { get; }
+        public Action<TRequest> Validate { get; }
+        public string ActivityName { get; }
+        public Func<TRequest, string> GetUserId { get; }
+        public Func<TRequest, string?> GetProvidedCustomerId { get; }
+        public Func<TRequest, StripeDiscount?> GetDiscount { get; }
+        public Func<TRequest, string> GetBusinessId { get; }
+        public Func<TRequest, string?> GetProvidedIdempotencyKey { get; }
+        public string IdempotencyScope { get; }
+        public Action<Activity?, TRequest> TagRequest { get; }
+        public Func<TRequest, string?, SessionCreateOptions> BuildOptions { get; }
+        public Action<Activity?, StripeCheckoutSession, string?> TagSession { get; }
+        public Func<TRequest, StripeCheckoutSession, PromotionValidationResult, string?, Task> PersistAsync { get; }
+        public Action<TRequest, StripeCheckoutSession, PromotionValidationResult, string?> EmitLog { get; }
     }
 }
