@@ -324,6 +324,86 @@ public class StripeWebhookProcessorTests
     }
 
     [Fact]
+    public async Task ProcessStripeEventAsync_DuplicateEvent_ReturnsRecordedOutcome()
+    {
+        StripeKitOptions options = new StripeKitOptions();
+        IWebhookEventStore eventStore = new InMemoryWebhookEventStore();
+        IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
+        ISubscriptionRecordStore subscriptionStore = new InMemorySubscriptionRecordStore();
+        IRefundRecordStore refundStore = new InMemoryRefundRecordStore();
+        WebhookSignatureVerifier verifier = new WebhookSignatureVerifier();
+        IStripeObjectLookup objectLookup = new FakeStripeObjectLookup();
+        StripeWebhookProcessor processor = new StripeWebhookProcessor(verifier, eventStore, paymentStore, subscriptionStore, refundStore, objectLookup, options);
+
+        PaymentRecord record = new PaymentRecord("user_event_dup_1", "biz_pay_event_dup_1", PaymentStatus.Pending, "pi_event_dup_1", null);
+        await paymentStore.SaveAsync(record);
+
+        Event stripeEvent = new Event
+        {
+            Id = "evt_event_dup_1",
+            Type = "payment_intent.succeeded",
+            Data = new EventData
+            {
+                Object = new PaymentIntent
+                {
+                    Id = "pi_event_dup_1",
+                    Status = "succeeded"
+                }
+            }
+        };
+
+        WebhookProcessingResult first = await processor.ProcessStripeEventAsync(stripeEvent);
+        WebhookProcessingResult second = await processor.ProcessStripeEventAsync(stripeEvent);
+
+        Assert.False(first.IsDuplicate);
+        Assert.True(second.IsDuplicate);
+        Assert.NotNull(second.Outcome);
+        Assert.True(second.Outcome!.Succeeded);
+    }
+
+    [Fact]
+    public async Task ProcessStripeEventAsync_FirstAttemptFailed_SecondDeliveryRetriesAndSucceeds()
+    {
+        StripeKitOptions options = new StripeKitOptions();
+        IWebhookEventStore eventStore = new InMemoryWebhookEventStore();
+        IPaymentRecordStore paymentStore = new InMemoryPaymentRecordStore();
+        ISubscriptionRecordStore subscriptionStore = new InMemorySubscriptionRecordStore();
+        IRefundRecordStore refundStore = new InMemoryRefundRecordStore();
+        WebhookSignatureVerifier verifier = new WebhookSignatureVerifier();
+        IStripeObjectLookup objectLookup = new FakeStripeObjectLookup();
+        StripeWebhookProcessor processor = new StripeWebhookProcessor(verifier, eventStore, paymentStore, subscriptionStore, refundStore, objectLookup, options);
+
+        Event stripeEvent = new Event
+        {
+            Id = "evt_event_retry_1",
+            Type = "payment_intent.succeeded",
+            Data = new EventData
+            {
+                Object = new PaymentIntent
+                {
+                    Id = "pi_event_retry_1",
+                    Status = "succeeded"
+                }
+            }
+        };
+
+        WebhookProcessingResult first = await processor.ProcessStripeEventAsync(stripeEvent);
+        PaymentRecord record = new PaymentRecord("user_event_retry_1", "biz_pay_event_retry_1", PaymentStatus.Pending, "pi_event_retry_1", null);
+        await paymentStore.SaveAsync(record);
+
+        WebhookProcessingResult second = await processor.ProcessStripeEventAsync(stripeEvent);
+        PaymentRecord? updated = await paymentStore.GetByPaymentIntentIdAsync("pi_event_retry_1");
+
+        Assert.NotNull(first.Outcome);
+        Assert.False(first.Outcome!.Succeeded);
+        Assert.False(first.IsDuplicate);
+        Assert.NotNull(second.Outcome);
+        Assert.True(second.Outcome!.Succeeded);
+        Assert.False(second.IsDuplicate);
+        Assert.Equal(PaymentStatus.Succeeded, updated!.Status);
+    }
+
+    [Fact]
     public async Task ProcessAsync_DuplicateEvent_ReturnsRecordedOutcome()
     {
         string payload = "{\"id\":\"evt_400\",\"object\":\"event\",\"api_version\":\"2022-11-15\",\"created\":1700000000,\"data\":{\"object\":{\"id\":\"pi_400\",\"object\":\"payment_intent\"}},\"livemode\":false,\"pending_webhooks\":1,\"type\":\"payment_intent.succeeded\"}";

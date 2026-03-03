@@ -2,6 +2,7 @@
 // Must-not-break: raw-body verification, event.id idempotency, replay-safe handlers.
 // See: docs/plan.md and module README for invariants.
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,11 +13,10 @@ public sealed class StripeWebhookProcessor
 {
     private readonly WebhookSignatureVerifier _signatureVerifier;
     private readonly IWebhookEventStore _eventStore;
-    private readonly IPaymentRecordStore _paymentRecords;
-    private readonly ISubscriptionRecordStore _subscriptionRecords;
-    private readonly IRefundRecordStore _refundRecords;
-    private readonly IStripeObjectLookup _objectLookup;
     private readonly StripeKitOptions _options;
+    private readonly PaymentWebhookApplicator _paymentApplicator;
+    private readonly SubscriptionWebhookApplicator _subscriptionApplicator;
+    private readonly RefundWebhookApplicator _refundApplicator;
 
     public StripeWebhookProcessor(
         WebhookSignatureVerifier signatureVerifier,
@@ -29,96 +29,38 @@ public sealed class StripeWebhookProcessor
     {
         _signatureVerifier = signatureVerifier ?? throw new ArgumentNullException(nameof(signatureVerifier));
         _eventStore = eventStore ?? throw new ArgumentNullException(nameof(eventStore));
-        _paymentRecords = paymentRecords ?? throw new ArgumentNullException(nameof(paymentRecords));
-        _subscriptionRecords = subscriptionRecords ?? throw new ArgumentNullException(nameof(subscriptionRecords));
-        _refundRecords = refundRecords ?? throw new ArgumentNullException(nameof(refundRecords));
-        _objectLookup = objectLookup ?? throw new ArgumentNullException(nameof(objectLookup));
         _options = options ?? throw new ArgumentNullException(nameof(options));
+        _paymentApplicator = new PaymentWebhookApplicator(
+            paymentRecords ?? throw new ArgumentNullException(nameof(paymentRecords)),
+            objectLookup ?? throw new ArgumentNullException(nameof(objectLookup)));
+        _subscriptionApplicator = new SubscriptionWebhookApplicator(
+            subscriptionRecords ?? throw new ArgumentNullException(nameof(subscriptionRecords)),
+            objectLookup);
+        _refundApplicator = new RefundWebhookApplicator(refundRecords ?? throw new ArgumentNullException(nameof(refundRecords)));
     }
 
-    public async Task<WebhookProcessingResult> ProcessAsync(
+    public Task<WebhookProcessingResult> ProcessAsync(
         string payload,
         string signatureHeader,
         string secret,
         CancellationToken cancellationToken = default)
     {
-        if (!_options.EnableWebhooks)
-        {
-            throw new InvalidOperationException("Webhooks module is disabled.");
-        }
+        EnsureWebhooksEnabled();
 
         StripeWebhookEvent stripeEvent = _signatureVerifier.VerifyAndParse(payload, signatureHeader, secret);
-        using Activity? activity = StripeKitDiagnostics.ActivitySource.StartActivity("stripekit.webhook.process");
-        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.EventId, stripeEvent.Id);
-        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.EventType, stripeEvent.Type);
 
-        bool started = await _eventStore.TryBeginAsync(stripeEvent.Id).ConfigureAwait(false);
-        if (!started)
-        {
-            activity?.SetTag("duplicate", true);
-            WebhookEventOutcome? existing = await _eventStore.GetOutcomeAsync(stripeEvent.Id).ConfigureAwait(false);
-            bool terminalDuplicate = IsTerminalDuplicate(existing);
-            if (!terminalDuplicate)
-            {
-                WebhookEventOutcome retryable = CreateRetryableDuplicateOutcome(existing);
-                StripeKitDiagnostics.EmitLog(
-                    "webhook.processed",
-                    (StripeKitDiagnosticTags.EventId, stripeEvent.Id),
-                    (StripeKitDiagnosticTags.EventType, stripeEvent.Type),
-                    ("duplicate", true),
-                    ("terminal_duplicate", false),
-                    ("succeeded", retryable.Succeeded),
-                    ("error", retryable.ErrorMessage));
-
-                return new WebhookProcessingResult(stripeEvent.Id, stripeEvent.Type, retryable, false);
-            }
-
-            StripeKitDiagnostics.EmitLog(
-                "webhook.processed",
-                (StripeKitDiagnosticTags.EventId, stripeEvent.Id),
-                (StripeKitDiagnosticTags.EventType, stripeEvent.Type),
-                ("duplicate", true),
-                ("terminal_duplicate", true),
-                ("succeeded", existing!.Succeeded),
-                ("error", existing.ErrorMessage));
-
-            return new WebhookProcessingResult(stripeEvent.Id, stripeEvent.Type, existing, true);
-        }
-
-        StripeWebhookEventData data = StripeWebhookEventData.Parse(payload);
-        AddDataTags(activity, data);
-        WebhookEventOutcome outcome = await ProcessInternalAsync(data, cancellationToken).ConfigureAwait(false);
-        activity?.SetTag("succeeded", outcome.Succeeded);
-        StripeKitDiagnostics.SetTag(activity, "error", outcome.ErrorMessage);
-
-        await _eventStore.RecordOutcomeAsync(stripeEvent.Id, outcome).ConfigureAwait(false);
-        StripeKitDiagnostics.EmitLog(
-            "webhook.processed",
-            (StripeKitDiagnosticTags.EventId, stripeEvent.Id),
-            (StripeKitDiagnosticTags.EventType, stripeEvent.Type),
-            (StripeKitDiagnosticTags.UserId, GetTagValue(activity, StripeKitDiagnosticTags.UserId)),
-            (StripeKitDiagnosticTags.BusinessPaymentId, GetTagValue(activity, StripeKitDiagnosticTags.BusinessPaymentId)),
-            (StripeKitDiagnosticTags.BusinessSubscriptionId, GetTagValue(activity, StripeKitDiagnosticTags.BusinessSubscriptionId)),
-            (StripeKitDiagnosticTags.BusinessRefundId, GetTagValue(activity, StripeKitDiagnosticTags.BusinessRefundId)),
-            (StripeKitDiagnosticTags.PaymentIntentId, data.PaymentIntentId),
-            (StripeKitDiagnosticTags.SubscriptionId, data.SubscriptionId),
-            (StripeKitDiagnosticTags.InvoiceId, string.Equals(data.ObjectType, "invoice", StringComparison.Ordinal) ? data.ObjectId : null),
-            (StripeKitDiagnosticTags.RefundId, data.RefundId),
-            ("duplicate", false),
-            ("succeeded", outcome.Succeeded),
-            ("error", outcome.ErrorMessage));
-
-        return new WebhookProcessingResult(stripeEvent.Id, stripeEvent.Type, outcome, false);
+        return ProcessEventCoreAsync(
+            stripeEvent.Id,
+            stripeEvent.Type,
+            () => StripeWebhookEventData.Parse(payload),
+            cancellationToken);
     }
 
-    public async Task<WebhookProcessingResult> ProcessStripeEventAsync(
+    public Task<WebhookProcessingResult> ProcessStripeEventAsync(
         Stripe.Event stripeEvent,
         CancellationToken cancellationToken = default)
     {
-        if (!_options.EnableWebhooks)
-        {
-            throw new InvalidOperationException("Webhooks module is disabled.");
-        }
+        EnsureWebhooksEnabled();
 
         if (stripeEvent == null)
         {
@@ -135,67 +77,69 @@ public sealed class StripeWebhookProcessor
             throw new ArgumentException("Event type is required.", nameof(stripeEvent));
         }
 
-        using Activity? activity = StripeKitDiagnostics.ActivitySource.StartActivity("stripekit.webhook.process");
-        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.EventId, stripeEvent.Id);
-        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.EventType, stripeEvent.Type);
+        return ProcessEventCoreAsync(
+            stripeEvent.Id,
+            stripeEvent.Type,
+            () => StripeWebhookEventData.FromEvent(stripeEvent),
+            cancellationToken);
+    }
 
-        bool started = await _eventStore.TryBeginAsync(stripeEvent.Id).ConfigureAwait(false);
-        if (!started)
+    private void EnsureWebhooksEnabled()
+    {
+        if (!_options.EnableWebhooks)
         {
-            activity?.SetTag("duplicate", true);
-            WebhookEventOutcome? existing = await _eventStore.GetOutcomeAsync(stripeEvent.Id).ConfigureAwait(false);
-            bool terminalDuplicate = IsTerminalDuplicate(existing);
-            if (!terminalDuplicate)
-            {
-                WebhookEventOutcome retryable = CreateRetryableDuplicateOutcome(existing);
-                StripeKitDiagnostics.EmitLog(
-                    "webhook.processed",
-                    (StripeKitDiagnosticTags.EventId, stripeEvent.Id),
-                    (StripeKitDiagnosticTags.EventType, stripeEvent.Type),
-                    ("duplicate", true),
-                    ("terminal_duplicate", false),
-                    ("succeeded", retryable.Succeeded),
-                    ("error", retryable.ErrorMessage));
+            throw new InvalidOperationException("Webhooks module is disabled.");
+        }
+    }
 
-                return new WebhookProcessingResult(stripeEvent.Id, stripeEvent.Type, retryable, false);
-            }
+    private async Task<WebhookProcessingResult> ProcessEventCoreAsync(
+        string eventId,
+        string eventType,
+        Func<StripeWebhookEventData> dataFactory,
+        CancellationToken cancellationToken)
+    {
+        using Activity? activity = StripeKitDiagnostics.ActivitySource.StartActivity("stripekit.webhook.process");
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.EventId, eventId);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.EventType, eventType);
 
-            StripeKitDiagnostics.EmitLog(
-                "webhook.processed",
-                (StripeKitDiagnosticTags.EventId, stripeEvent.Id),
-                (StripeKitDiagnosticTags.EventType, stripeEvent.Type),
-                ("duplicate", true),
-                ("terminal_duplicate", true),
-                ("succeeded", existing!.Succeeded),
-                ("error", existing.ErrorMessage));
-
-            return new WebhookProcessingResult(stripeEvent.Id, stripeEvent.Type, existing, true);
+        WebhookProcessingResult? duplicateResult = await TryHandleDuplicateAsync(eventId, eventType, activity).ConfigureAwait(false);
+        if (duplicateResult != null)
+        {
+            return duplicateResult;
         }
 
-        StripeWebhookEventData data = StripeWebhookEventData.FromEvent(stripeEvent);
+        StripeWebhookEventData data = dataFactory();
         AddDataTags(activity, data);
         WebhookEventOutcome outcome = await ProcessInternalAsync(data, cancellationToken).ConfigureAwait(false);
         activity?.SetTag("succeeded", outcome.Succeeded);
         StripeKitDiagnostics.SetTag(activity, "error", outcome.ErrorMessage);
 
-        await _eventStore.RecordOutcomeAsync(stripeEvent.Id, outcome).ConfigureAwait(false);
-        StripeKitDiagnostics.EmitLog(
-            "webhook.processed",
-            (StripeKitDiagnosticTags.EventId, stripeEvent.Id),
-            (StripeKitDiagnosticTags.EventType, stripeEvent.Type),
-            (StripeKitDiagnosticTags.UserId, GetTagValue(activity, StripeKitDiagnosticTags.UserId)),
-            (StripeKitDiagnosticTags.BusinessPaymentId, GetTagValue(activity, StripeKitDiagnosticTags.BusinessPaymentId)),
-            (StripeKitDiagnosticTags.BusinessSubscriptionId, GetTagValue(activity, StripeKitDiagnosticTags.BusinessSubscriptionId)),
-            (StripeKitDiagnosticTags.BusinessRefundId, GetTagValue(activity, StripeKitDiagnosticTags.BusinessRefundId)),
-            (StripeKitDiagnosticTags.PaymentIntentId, data.PaymentIntentId),
-            (StripeKitDiagnosticTags.SubscriptionId, data.SubscriptionId),
-            (StripeKitDiagnosticTags.InvoiceId, string.Equals(data.ObjectType, "invoice", StringComparison.Ordinal) ? data.ObjectId : null),
-            (StripeKitDiagnosticTags.RefundId, data.RefundId),
-            ("duplicate", false),
-            ("succeeded", outcome.Succeeded),
-            ("error", outcome.ErrorMessage));
+        await _eventStore.RecordOutcomeAsync(eventId, outcome).ConfigureAwait(false);
+        EmitProcessedLog(activity, eventId, eventType, data, outcome, duplicate: false, terminalDuplicate: null);
 
-        return new WebhookProcessingResult(stripeEvent.Id, stripeEvent.Type, outcome, false);
+        return new WebhookProcessingResult(eventId, eventType, outcome, false);
+    }
+
+    private async Task<WebhookProcessingResult?> TryHandleDuplicateAsync(string eventId, string eventType, Activity? activity)
+    {
+        bool started = await _eventStore.TryBeginAsync(eventId).ConfigureAwait(false);
+        if (started)
+        {
+            return null;
+        }
+
+        activity?.SetTag("duplicate", true);
+        WebhookEventOutcome? existing = await _eventStore.GetOutcomeAsync(eventId).ConfigureAwait(false);
+        bool terminalDuplicate = IsTerminalDuplicate(existing);
+        if (!terminalDuplicate)
+        {
+            WebhookEventOutcome retryable = CreateRetryableDuplicateOutcome(existing);
+            EmitProcessedLog(activity, eventId, eventType, null, retryable, duplicate: true, terminalDuplicate: false);
+            return new WebhookProcessingResult(eventId, eventType, retryable, false);
+        }
+
+        EmitProcessedLog(activity, eventId, eventType, null, existing, duplicate: true, terminalDuplicate: true);
+        return new WebhookProcessingResult(eventId, eventType, existing, true);
     }
 
     private async Task<WebhookEventOutcome> ProcessInternalAsync(
@@ -224,68 +168,190 @@ public sealed class StripeWebhookProcessor
             case "payment_intent.succeeded":
                 if (_options.EnablePayments)
                 {
-                    await UpdatePaymentStatusAsync(data, PaymentStatus.Succeeded, data.EventCreated).ConfigureAwait(false);
+                    await _paymentApplicator.UpdateStatusAsync(data, PaymentStatus.Succeeded, data.EventCreated).ConfigureAwait(false);
                 }
                 break;
             case "payment_intent.payment_failed":
                 if (_options.EnablePayments)
                 {
-                    await UpdatePaymentStatusAsync(data, PaymentStatus.Failed, data.EventCreated).ConfigureAwait(false);
+                    await _paymentApplicator.UpdateStatusAsync(data, PaymentStatus.Failed, data.EventCreated).ConfigureAwait(false);
                 }
                 break;
             case "customer.subscription.deleted":
                 if (_options.EnableBilling)
                 {
-                    await UpdateSubscriptionStatusAsync(data, SubscriptionStatus.Canceled, data.EventCreated).ConfigureAwait(false);
+                    await _subscriptionApplicator.UpdateStatusAsync(data, SubscriptionStatus.Canceled, data.EventCreated).ConfigureAwait(false);
                 }
                 break;
             case "invoice.payment_succeeded":
                 if (_options.EnableBilling)
                 {
-                    await UpdateSubscriptionStatusAsync(data, SubscriptionStatus.Active, data.EventCreated).ConfigureAwait(false);
+                    await _subscriptionApplicator.UpdateStatusAsync(data, SubscriptionStatus.Active, data.EventCreated).ConfigureAwait(false);
                 }
                 break;
             case "invoice.payment_failed":
                 if (_options.EnableBilling)
                 {
-                    await UpdateSubscriptionStatusAsync(data, SubscriptionStatus.PastDue, data.EventCreated).ConfigureAwait(false);
+                    await _subscriptionApplicator.UpdateStatusAsync(data, SubscriptionStatus.PastDue, data.EventCreated).ConfigureAwait(false);
                 }
                 break;
             case "customer.subscription.created":
             case "customer.subscription.updated":
-                if (_options.EnableBilling)
+                if (_options.EnableBilling &&
+                    SubscriptionWebhookApplicator.TryMapSubscriptionStatus(data.ObjectStatus, out SubscriptionStatus subscriptionStatus))
                 {
-                    if (TryMapSubscriptionStatus(data.ObjectStatus, out SubscriptionStatus status))
-                    {
-                        await UpdateSubscriptionStatusAsync(data, status, data.EventCreated).ConfigureAwait(false);
-                    }
+                    await _subscriptionApplicator.UpdateStatusAsync(data, subscriptionStatus, data.EventCreated).ConfigureAwait(false);
                 }
                 break;
             case "checkout.session.completed":
-                await BackfillCheckoutCorrelationAsync(data).ConfigureAwait(false);
+                await _paymentApplicator.BackfillCheckoutCorrelationAsync(
+                    data,
+                    _options.EnablePayments).ConfigureAwait(false);
+                await _subscriptionApplicator.BackfillCheckoutCorrelationAsync(
+                    data,
+                    _options.EnableBilling).ConfigureAwait(false);
                 break;
             case "refund.created":
             case "refund.updated":
-                if (_options.EnableRefunds)
+                if (_options.EnableRefunds &&
+                    RefundWebhookApplicator.TryMapRefundStatus(data.ObjectStatus, out RefundStatus refundStatus))
                 {
-                    if (TryMapRefundStatus(data.ObjectStatus, out RefundStatus status))
-                    {
-                        string refundId = ResolveRefundId(data);
-                        await UpdateRefundStatusAsync(refundId, status).ConfigureAwait(false);
-                    }
+                    await _refundApplicator.UpdateStatusAsync(data, refundStatus).ConfigureAwait(false);
                 }
                 break;
             case "refund.failed":
                 if (_options.EnableRefunds)
                 {
-                    string refundId = ResolveRefundId(data);
-                    await UpdateRefundStatusAsync(refundId, RefundStatus.Failed).ConfigureAwait(false);
+                    await _refundApplicator.UpdateStatusAsync(data, RefundStatus.Failed).ConfigureAwait(false);
                 }
                 break;
         }
     }
 
-    private async Task UpdatePaymentStatusAsync(StripeWebhookEventData data, PaymentStatus status, DateTimeOffset? eventCreated)
+    private static void AddDataTags(Activity? activity, StripeWebhookEventData data)
+    {
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.StripeObjectId, data.ObjectId);
+        if (string.Equals(data.ObjectType, "invoice", StringComparison.Ordinal))
+        {
+            StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.InvoiceId, data.ObjectId);
+        }
+
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.PaymentIntentId, data.PaymentIntentId);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.SubscriptionId, data.SubscriptionId);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.RefundId, data.RefundId);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.BusinessPaymentId, data.BusinessPaymentId);
+        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.BusinessSubscriptionId, data.BusinessSubscriptionId);
+    }
+
+    private static void EmitProcessedLog(
+        Activity? activity,
+        string eventId,
+        string eventType,
+        StripeWebhookEventData? data,
+        WebhookEventOutcome? outcome,
+        bool duplicate,
+        bool? terminalDuplicate)
+    {
+        List<(string Key, object? Value)> fields = new List<(string Key, object? Value)>
+        {
+            (StripeKitDiagnosticTags.EventId, eventId),
+            (StripeKitDiagnosticTags.EventType, eventType),
+            (StripeKitDiagnosticTags.UserId, GetTagValue(activity, StripeKitDiagnosticTags.UserId)),
+            (StripeKitDiagnosticTags.BusinessPaymentId, GetTagValue(activity, StripeKitDiagnosticTags.BusinessPaymentId)),
+            (StripeKitDiagnosticTags.BusinessSubscriptionId, GetTagValue(activity, StripeKitDiagnosticTags.BusinessSubscriptionId)),
+            (StripeKitDiagnosticTags.BusinessRefundId, GetTagValue(activity, StripeKitDiagnosticTags.BusinessRefundId)),
+            (StripeKitDiagnosticTags.PaymentIntentId, data?.PaymentIntentId),
+            (StripeKitDiagnosticTags.SubscriptionId, data?.SubscriptionId),
+            (StripeKitDiagnosticTags.InvoiceId, data != null && string.Equals(data.ObjectType, "invoice", StringComparison.Ordinal) ? data.ObjectId : null),
+            (StripeKitDiagnosticTags.RefundId, data?.RefundId),
+            ("duplicate", duplicate),
+            ("succeeded", outcome?.Succeeded),
+            ("error", outcome?.ErrorMessage)
+        };
+
+        if (terminalDuplicate.HasValue)
+        {
+            fields.Add(("terminal_duplicate", terminalDuplicate.Value));
+        }
+
+        StripeKitDiagnostics.EmitLog("webhook.processed", fields.ToArray());
+    }
+
+    private static string? GetTagValue(Activity? activity, string key)
+    {
+        if (activity == null)
+        {
+            return null;
+        }
+
+        foreach (KeyValuePair<string, object?> tag in activity.TagObjects)
+        {
+            if (string.Equals(tag.Key, key, StringComparison.Ordinal))
+            {
+                return tag.Value?.ToString();
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsTerminalDuplicate(WebhookEventOutcome? existingOutcome)
+    {
+        return existingOutcome != null && existingOutcome.Succeeded;
+    }
+
+    private static WebhookEventOutcome CreateRetryableDuplicateOutcome(WebhookEventOutcome? existingOutcome)
+    {
+        if (existingOutcome != null && !existingOutcome.Succeeded)
+        {
+            return existingOutcome;
+        }
+
+        return new WebhookEventOutcome(
+            false,
+            "Event is already processing. Retry delivery.",
+            DateTimeOffset.UtcNow);
+    }
+}
+
+public sealed class WebhookProcessingResult
+{
+    public WebhookProcessingResult(string eventId, string eventType, WebhookEventOutcome? outcome, bool isDuplicate)
+    {
+        if (string.IsNullOrWhiteSpace(eventId))
+        {
+            throw new ArgumentException("Event ID is required.", nameof(eventId));
+        }
+
+        if (string.IsNullOrWhiteSpace(eventType))
+        {
+            throw new ArgumentException("Event type is required.", nameof(eventType));
+        }
+
+        EventId = eventId;
+        EventType = eventType;
+        Outcome = outcome;
+        IsDuplicate = isDuplicate;
+    }
+
+    public string EventId { get; }
+    public string EventType { get; }
+    public WebhookEventOutcome? Outcome { get; }
+    public bool IsDuplicate { get; }
+}
+
+internal sealed class PaymentWebhookApplicator
+{
+    private readonly IPaymentRecordStore _paymentRecords;
+    private readonly IStripeObjectLookup _objectLookup;
+
+    public PaymentWebhookApplicator(IPaymentRecordStore paymentRecords, IStripeObjectLookup objectLookup)
+    {
+        _paymentRecords = paymentRecords;
+        _objectLookup = objectLookup;
+    }
+
+    public async Task UpdateStatusAsync(StripeWebhookEventData data, PaymentStatus status, DateTimeOffset? eventCreated)
     {
         string? paymentIntentId = await TryResolvePaymentIntentIdAsync(data).ConfigureAwait(false);
         PaymentRecord? record = null;
@@ -328,7 +394,117 @@ public sealed class StripeWebhookProcessor
         await _paymentRecords.SaveAsync(updated).ConfigureAwait(false);
     }
 
-    private async Task UpdateSubscriptionStatusAsync(StripeWebhookEventData data, SubscriptionStatus status, DateTimeOffset? eventCreated)
+    public async Task BackfillCheckoutCorrelationAsync(StripeWebhookEventData data, bool paymentsEnabled)
+    {
+        if (!paymentsEnabled ||
+            !string.Equals(data.ObjectType, "checkout.session", StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(data.BusinessPaymentId))
+        {
+            return;
+        }
+
+        PaymentRecord? paymentRecord = await _paymentRecords.GetByBusinessIdAsync(data.BusinessPaymentId).ConfigureAwait(false);
+        if (paymentRecord == null ||
+            string.Equals(paymentRecord.PaymentIntentId, data.PaymentIntentId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        PaymentRecord updatedPayment = new PaymentRecord(
+            paymentRecord.UserId,
+            paymentRecord.BusinessPaymentId,
+            paymentRecord.Status,
+            data.PaymentIntentId,
+            paymentRecord.ChargeId,
+            paymentRecord.PromotionOutcome,
+            paymentRecord.PromotionCouponId,
+            paymentRecord.PromotionCodeId,
+            paymentRecord.LastStripeEventCreated);
+
+        await _paymentRecords.SaveAsync(updatedPayment).ConfigureAwait(false);
+    }
+
+    private async Task<string?> TryResolvePaymentIntentIdAsync(StripeWebhookEventData data)
+    {
+        if (!string.IsNullOrWhiteSpace(data.PaymentIntentId))
+        {
+            return data.PaymentIntentId;
+        }
+
+        if (string.IsNullOrWhiteSpace(data.ObjectId))
+        {
+            return null;
+        }
+
+        string? paymentIntentId = await _objectLookup.GetPaymentIntentIdAsync(data.ObjectId).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(paymentIntentId))
+        {
+            return null;
+        }
+
+        return paymentIntentId;
+    }
+
+    private static bool ShouldApplyPaymentStatus(PaymentRecord record, PaymentStatus incomingStatus, DateTimeOffset? eventCreated)
+    {
+        if (record.Status == PaymentStatus.Canceled && incomingStatus != PaymentStatus.Canceled)
+        {
+            return false;
+        }
+
+        if (record.Status == PaymentStatus.Succeeded && incomingStatus != PaymentStatus.Succeeded)
+        {
+            return false;
+        }
+
+        if (!record.LastStripeEventCreated.HasValue || !eventCreated.HasValue)
+        {
+            return true;
+        }
+
+        if (eventCreated.Value < record.LastStripeEventCreated.Value)
+        {
+            return false;
+        }
+
+        if (eventCreated.Value == record.LastStripeEventCreated.Value)
+        {
+            return GetPaymentStatusPrecedence(incomingStatus) >= GetPaymentStatusPrecedence(record.Status);
+        }
+
+        return true;
+    }
+
+    private static int GetPaymentStatusPrecedence(PaymentStatus status)
+    {
+        switch (status)
+        {
+            case PaymentStatus.Pending:
+                return 0;
+            case PaymentStatus.Failed:
+                return 1;
+            case PaymentStatus.Succeeded:
+                return 2;
+            case PaymentStatus.Canceled:
+                return 3;
+            default:
+                return -1;
+        }
+    }
+}
+
+internal sealed class SubscriptionWebhookApplicator
+{
+    private readonly ISubscriptionRecordStore _subscriptionRecords;
+    private readonly IStripeObjectLookup _objectLookup;
+
+    public SubscriptionWebhookApplicator(ISubscriptionRecordStore subscriptionRecords, IStripeObjectLookup objectLookup)
+    {
+        _subscriptionRecords = subscriptionRecords;
+        _objectLookup = objectLookup;
+    }
+
+    public async Task UpdateStatusAsync(StripeWebhookEventData data, SubscriptionStatus status, DateTimeOffset? eventCreated)
     {
         string? subscriptionId = await TryResolveSubscriptionIdAsync(data).ConfigureAwait(false);
         SubscriptionRecord? record = null;
@@ -372,116 +548,41 @@ public sealed class StripeWebhookProcessor
         await _subscriptionRecords.SaveAsync(updated).ConfigureAwait(false);
     }
 
-    private async Task BackfillCheckoutCorrelationAsync(StripeWebhookEventData data)
+    public async Task BackfillCheckoutCorrelationAsync(StripeWebhookEventData data, bool billingEnabled)
     {
-        if (string.Equals(data.ObjectType, "checkout.session", StringComparison.Ordinal) &&
-            _options.EnablePayments &&
-            !string.IsNullOrWhiteSpace(data.BusinessPaymentId))
+        if (!billingEnabled ||
+            !string.Equals(data.ObjectType, "checkout.session", StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(data.BusinessSubscriptionId))
         {
-            PaymentRecord? paymentRecord = await _paymentRecords.GetByBusinessIdAsync(data.BusinessPaymentId).ConfigureAwait(false);
-            if (paymentRecord != null && !string.Equals(paymentRecord.PaymentIntentId, data.PaymentIntentId, StringComparison.Ordinal))
-            {
-                PaymentRecord updatedPayment = new PaymentRecord(
-                    paymentRecord.UserId,
-                    paymentRecord.BusinessPaymentId,
-                    paymentRecord.Status,
-                    data.PaymentIntentId,
-                    paymentRecord.ChargeId,
-                    paymentRecord.PromotionOutcome,
-                    paymentRecord.PromotionCouponId,
-                    paymentRecord.PromotionCodeId,
-                    paymentRecord.LastStripeEventCreated);
-
-                await _paymentRecords.SaveAsync(updatedPayment).ConfigureAwait(false);
-            }
+            return;
         }
 
-        if (string.Equals(data.ObjectType, "checkout.session", StringComparison.Ordinal) &&
-            _options.EnableBilling &&
-            !string.IsNullOrWhiteSpace(data.BusinessSubscriptionId))
-        {
-            SubscriptionRecord? subscriptionRecord = await _subscriptionRecords.GetByBusinessIdAsync(data.BusinessSubscriptionId).ConfigureAwait(false);
-            if (subscriptionRecord != null &&
-                (!string.Equals(subscriptionRecord.SubscriptionId, data.SubscriptionId, StringComparison.Ordinal) ||
-                 !string.Equals(subscriptionRecord.CustomerId, data.CustomerId, StringComparison.Ordinal)))
-            {
-                SubscriptionRecord updatedSubscription = new SubscriptionRecord(
-                    subscriptionRecord.UserId,
-                    subscriptionRecord.BusinessSubscriptionId,
-                    subscriptionRecord.Status,
-                    data.CustomerId ?? subscriptionRecord.CustomerId,
-                    data.SubscriptionId ?? subscriptionRecord.SubscriptionId,
-                    subscriptionRecord.PromotionOutcome,
-                    subscriptionRecord.PromotionCouponId,
-                    subscriptionRecord.PromotionCodeId,
-                    subscriptionRecord.LastStripeEventCreated);
+        SubscriptionRecord? subscriptionRecord = await _subscriptionRecords
+            .GetByBusinessIdAsync(data.BusinessSubscriptionId)
+            .ConfigureAwait(false);
 
-                await _subscriptionRecords.SaveAsync(updatedSubscription).ConfigureAwait(false);
-            }
+        if (subscriptionRecord == null ||
+            (string.Equals(subscriptionRecord.SubscriptionId, data.SubscriptionId, StringComparison.Ordinal) &&
+             string.Equals(subscriptionRecord.CustomerId, data.CustomerId, StringComparison.Ordinal)))
+        {
+            return;
         }
+
+        SubscriptionRecord updatedSubscription = new SubscriptionRecord(
+            subscriptionRecord.UserId,
+            subscriptionRecord.BusinessSubscriptionId,
+            subscriptionRecord.Status,
+            data.CustomerId ?? subscriptionRecord.CustomerId,
+            data.SubscriptionId ?? subscriptionRecord.SubscriptionId,
+            subscriptionRecord.PromotionOutcome,
+            subscriptionRecord.PromotionCouponId,
+            subscriptionRecord.PromotionCodeId,
+            subscriptionRecord.LastStripeEventCreated);
+
+        await _subscriptionRecords.SaveAsync(updatedSubscription).ConfigureAwait(false);
     }
 
-    private async Task UpdateRefundStatusAsync(string? refundId, RefundStatus status)
-    {
-        if (string.IsNullOrWhiteSpace(refundId))
-        {
-            throw new InvalidOperationException("Missing refund id.");
-        }
-
-        RefundRecord? record = await _refundRecords.GetByRefundIdAsync(refundId).ConfigureAwait(false);
-        if (record == null)
-        {
-            throw new InvalidOperationException("Refund record not found for refund id.");
-        }
-
-        RefundRecord updated = new RefundRecord(
-            record.UserId,
-            record.BusinessRefundId,
-            record.BusinessPaymentId,
-            status,
-            record.PaymentIntentId,
-            record.RefundId);
-
-        StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.UserId, record.UserId);
-        StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.BusinessRefundId, record.BusinessRefundId);
-        StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.BusinessPaymentId, record.BusinessPaymentId);
-        StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.RefundId, record.RefundId);
-        StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.PaymentIntentId, record.PaymentIntentId);
-
-        await _refundRecords.SaveAsync(updated).ConfigureAwait(false);
-    }
-
-    private static string ResolveRefundId(StripeWebhookEventData data)
-    {
-        if (!string.IsNullOrWhiteSpace(data.RefundId))
-        {
-            return data.RefundId;
-        }
-
-        if (!string.IsNullOrWhiteSpace(data.ObjectId))
-        {
-            return data.ObjectId;
-        }
-
-        throw new InvalidOperationException("Missing refund id.");
-    }
-
-    private static void AddDataTags(Activity? activity, StripeWebhookEventData data)
-    {
-        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.StripeObjectId, data.ObjectId);
-        if (string.Equals(data.ObjectType, "invoice", StringComparison.Ordinal))
-        {
-            StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.InvoiceId, data.ObjectId);
-        }
-
-        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.PaymentIntentId, data.PaymentIntentId);
-        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.SubscriptionId, data.SubscriptionId);
-        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.RefundId, data.RefundId);
-        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.BusinessPaymentId, data.BusinessPaymentId);
-        StripeKitDiagnostics.SetTag(activity, StripeKitDiagnosticTags.BusinessSubscriptionId, data.BusinessSubscriptionId);
-    }
-
-    private static bool TryMapSubscriptionStatus(string? status, out SubscriptionStatus mapped)
+    public static bool TryMapSubscriptionStatus(string? status, out SubscriptionStatus mapped)
     {
         mapped = default;
 
@@ -518,7 +619,106 @@ public sealed class StripeWebhookProcessor
         return false;
     }
 
-    private static bool TryMapRefundStatus(string? status, out RefundStatus mapped)
+    private async Task<string?> TryResolveSubscriptionIdAsync(StripeWebhookEventData data)
+    {
+        if (!string.IsNullOrWhiteSpace(data.SubscriptionId))
+        {
+            return data.SubscriptionId;
+        }
+
+        if (string.IsNullOrWhiteSpace(data.ObjectId))
+        {
+            return null;
+        }
+
+        string? subscriptionId = await _objectLookup.GetSubscriptionIdAsync(data.ObjectId).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(subscriptionId))
+        {
+            return null;
+        }
+
+        return subscriptionId;
+    }
+
+    private static bool ShouldApplySubscriptionStatus(SubscriptionRecord record, SubscriptionStatus incomingStatus, DateTimeOffset? eventCreated)
+    {
+        if (record.Status == SubscriptionStatus.Canceled && incomingStatus != SubscriptionStatus.Canceled)
+        {
+            return false;
+        }
+
+        if (!record.LastStripeEventCreated.HasValue || !eventCreated.HasValue)
+        {
+            return true;
+        }
+
+        if (eventCreated.Value < record.LastStripeEventCreated.Value)
+        {
+            return false;
+        }
+
+        if (eventCreated.Value == record.LastStripeEventCreated.Value)
+        {
+            return GetSubscriptionStatusPrecedence(incomingStatus) >= GetSubscriptionStatusPrecedence(record.Status);
+        }
+
+        return true;
+    }
+
+    private static int GetSubscriptionStatusPrecedence(SubscriptionStatus status)
+    {
+        switch (status)
+        {
+            case SubscriptionStatus.Incomplete:
+                return 0;
+            case SubscriptionStatus.PastDue:
+                return 1;
+            case SubscriptionStatus.Active:
+                return 2;
+            case SubscriptionStatus.Canceled:
+                return 3;
+            default:
+                return -1;
+        }
+    }
+}
+
+internal sealed class RefundWebhookApplicator
+{
+    private readonly IRefundRecordStore _refundRecords;
+
+    public RefundWebhookApplicator(IRefundRecordStore refundRecords)
+    {
+        _refundRecords = refundRecords;
+    }
+
+    public async Task UpdateStatusAsync(StripeWebhookEventData data, RefundStatus status)
+    {
+        string refundId = ResolveRefundId(data);
+        RefundRecord? record = await _refundRecords.GetByRefundIdAsync(refundId).ConfigureAwait(false);
+        if (record == null)
+        {
+            throw new InvalidOperationException("Refund record not found for refund id.");
+        }
+
+        RefundRecord updated = new RefundRecord(
+            record.UserId,
+            record.BusinessRefundId,
+            record.BusinessPaymentId,
+            status,
+            record.PaymentIntentId,
+            record.RefundId);
+
+        StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.UserId, record.UserId);
+        StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.BusinessRefundId, record.BusinessRefundId);
+        StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.BusinessPaymentId, record.BusinessPaymentId);
+        StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.RefundId, record.RefundId);
+        StripeKitDiagnostics.SetTag(Activity.Current, StripeKitDiagnosticTags.PaymentIntentId, record.PaymentIntentId);
+
+        await _refundRecords.SaveAsync(updated).ConfigureAwait(false);
+    }
+
+    public static bool TryMapRefundStatus(string? status, out RefundStatus mapped)
     {
         mapped = default;
 
@@ -548,196 +748,18 @@ public sealed class StripeWebhookProcessor
         return false;
     }
 
-    private static bool ShouldApplyPaymentStatus(PaymentRecord record, PaymentStatus incomingStatus, DateTimeOffset? eventCreated)
+    private static string ResolveRefundId(StripeWebhookEventData data)
     {
-        if (record.Status == PaymentStatus.Canceled && incomingStatus != PaymentStatus.Canceled)
+        if (!string.IsNullOrWhiteSpace(data.RefundId))
         {
-            return false;
+            return data.RefundId;
         }
 
-        if (record.Status == PaymentStatus.Succeeded && incomingStatus != PaymentStatus.Succeeded)
+        if (!string.IsNullOrWhiteSpace(data.ObjectId))
         {
-            return false;
+            return data.ObjectId;
         }
 
-        if (!record.LastStripeEventCreated.HasValue || !eventCreated.HasValue)
-        {
-            return true;
-        }
-
-        if (eventCreated.Value < record.LastStripeEventCreated.Value)
-        {
-            return false;
-        }
-
-        if (eventCreated.Value == record.LastStripeEventCreated.Value)
-        {
-            return GetPaymentStatusPrecedence(incomingStatus) >= GetPaymentStatusPrecedence(record.Status);
-        }
-
-        return true;
+        throw new InvalidOperationException("Missing refund id.");
     }
-
-    private static bool ShouldApplySubscriptionStatus(SubscriptionRecord record, SubscriptionStatus incomingStatus, DateTimeOffset? eventCreated)
-    {
-        if (record.Status == SubscriptionStatus.Canceled && incomingStatus != SubscriptionStatus.Canceled)
-        {
-            return false;
-        }
-
-        if (!record.LastStripeEventCreated.HasValue || !eventCreated.HasValue)
-        {
-            return true;
-        }
-
-        if (eventCreated.Value < record.LastStripeEventCreated.Value)
-        {
-            return false;
-        }
-
-        if (eventCreated.Value == record.LastStripeEventCreated.Value)
-        {
-            return GetSubscriptionStatusPrecedence(incomingStatus) >= GetSubscriptionStatusPrecedence(record.Status);
-        }
-
-        return true;
-    }
-
-    private static int GetPaymentStatusPrecedence(PaymentStatus status)
-    {
-        switch (status)
-        {
-            case PaymentStatus.Pending:
-                return 0;
-            case PaymentStatus.Failed:
-                return 1;
-            case PaymentStatus.Succeeded:
-                return 2;
-            case PaymentStatus.Canceled:
-                return 3;
-            default:
-                return -1;
-        }
-    }
-
-    private static int GetSubscriptionStatusPrecedence(SubscriptionStatus status)
-    {
-        switch (status)
-        {
-            case SubscriptionStatus.Incomplete:
-                return 0;
-            case SubscriptionStatus.PastDue:
-                return 1;
-            case SubscriptionStatus.Active:
-                return 2;
-            case SubscriptionStatus.Canceled:
-                return 3;
-            default:
-                return -1;
-        }
-    }
-
-    private static string? GetTagValue(Activity? activity, string key)
-    {
-        if (activity == null)
-        {
-            return null;
-        }
-
-        foreach (KeyValuePair<string, object?> tag in activity.TagObjects)
-        {
-            if (string.Equals(tag.Key, key, StringComparison.Ordinal))
-            {
-                return tag.Value?.ToString();
-            }
-        }
-
-        return null;
-    }
-
-    private static bool IsTerminalDuplicate(WebhookEventOutcome? existingOutcome)
-    {
-        return existingOutcome != null && existingOutcome.Succeeded;
-    }
-
-    private static WebhookEventOutcome CreateRetryableDuplicateOutcome(WebhookEventOutcome? existingOutcome)
-    {
-        if (existingOutcome != null && !existingOutcome.Succeeded)
-        {
-            return existingOutcome;
-        }
-
-        return new WebhookEventOutcome(
-            false,
-            "Event is already processing. Retry delivery.",
-            DateTimeOffset.UtcNow);
-    }
-
-    private async Task<string?> TryResolvePaymentIntentIdAsync(StripeWebhookEventData data)
-    {
-        if (!string.IsNullOrWhiteSpace(data.PaymentIntentId))
-        {
-            return data.PaymentIntentId;
-        }
-
-        if (string.IsNullOrWhiteSpace(data.ObjectId))
-        {
-            return null;
-        }
-
-        string? paymentIntentId = await _objectLookup.GetPaymentIntentIdAsync(data.ObjectId).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(paymentIntentId))
-        {
-            return null;
-        }
-
-        return paymentIntentId;
-    }
-
-    private async Task<string?> TryResolveSubscriptionIdAsync(StripeWebhookEventData data)
-    {
-        if (!string.IsNullOrWhiteSpace(data.SubscriptionId))
-        {
-            return data.SubscriptionId;
-        }
-
-        if (string.IsNullOrWhiteSpace(data.ObjectId))
-        {
-            return null;
-        }
-
-        string? subscriptionId = await _objectLookup.GetSubscriptionIdAsync(data.ObjectId).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(subscriptionId))
-        {
-            return null;
-        }
-
-        return subscriptionId;
-    }
-}
-
-public sealed class WebhookProcessingResult
-{
-    public WebhookProcessingResult(string eventId, string eventType, WebhookEventOutcome? outcome, bool isDuplicate)
-    {
-        if (string.IsNullOrWhiteSpace(eventId))
-        {
-            throw new ArgumentException("Event ID is required.", nameof(eventId));
-        }
-
-        if (string.IsNullOrWhiteSpace(eventType))
-        {
-            throw new ArgumentException("Event type is required.", nameof(eventType));
-        }
-
-        EventId = eventId;
-        EventType = eventType;
-        Outcome = outcome;
-        IsDuplicate = isDuplicate;
-    }
-
-    public string EventId { get; }
-    public string EventType { get; }
-    public WebhookEventOutcome? Outcome { get; }
-    public bool IsDuplicate { get; }
 }
