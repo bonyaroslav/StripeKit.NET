@@ -1,167 +1,221 @@
 # StripeKit.NET
-Minimal, production-correct Stripe integration toolkit for .NET: webhooks, idempotency, billing state - packaged as a small library + a tiny sample API.
 
-## Why
-Stripe integrations usually break in 3 places:
-1) duplicate operations from retries → idempotency everywhere
-2) webhook signature/body handling → raw-body verification
-3) billing state drift (late/out-of-order/missed events) → webhook-driven state + reconciliation
+<p align="center">
+  <strong>Reference-style Stripe integration for .NET 8</strong><br/>
+  Hosted Checkout, verified webhooks, retry-safe processing, reconciliation, and a minimal ASP.NET Core sample API.
+</p>
 
-## Production Features You Get Today
-StripeKit.NET gives you production-grade billing safeguards out of the box, without heavyweight architecture.
+<p align="center">
+  <img src="https://img.shields.io/badge/.NET-8-512BD4?logo=dotnet" alt=".NET 8" />
+  <img src="https://img.shields.io/badge/Stripe-Checkout-635BFF?logo=stripe" alt="Stripe Checkout" />
+  <img src="https://img.shields.io/badge/Webhooks-Signature%20Verified-0A7E07" alt="Webhook signature verification" />
+  <img src="https://img.shields.io/badge/Idempotency-Deterministic-1F6FEB" alt="Deterministic idempotency" />
+  <img src="https://img.shields.io/badge/Reconciliation-Included-6F42C1" alt="Reconciliation included" />
+  <img src="https://img.shields.io/badge/Tests-Unit%20%2B%20Integration-2DA44E" alt="Unit and integration tests" />
+</p>
 
-- Verified webhooks from raw body (`Stripe-Signature`) so signature checks are trustworthy.
-- Idempotent webhook processing by Stripe `event.id` so retries and duplicates stay safe.
-- Retry-aware dedupe semantics so failed events can be retried and successful events remain replay-safe.
-- Deterministic idempotency keys for create calls so the same business operation does not double-charge.
-- Checkout support for both one-time payments and subscriptions to ship common billing flows fast.
-- Promotions in both modes: customer-entered promo codes and backend-applied coupon/promo discounts.
-- Business-id + metadata correlation so Stripe objects remain traceable to your internal `user_id`.
-- Out-of-order event guards and status precedence so delayed events cannot regress terminal state.
-- Thin-event fallback lookups so missing webhook fields can be resolved from Stripe objects.
-- Reconciliation pipeline that replays recent events through the same dedupe + handlers to converge state.
-- Refund flow with guardrails so only valid succeeded payments are refunded, idempotently.
-- Built-in observability via `ActivitySource` (`StripeKit`) with correlation tags for debugging and support.
-- Store seams for both in-memory and DB-backed adapters so you can start fast and persist when ready.
+## Why this project exists
 
-## Why Teams Pick StripeKit.NET
-- Engineers: fewer billing edge-case bugs, clear extension seams, and test-backed behavior.
-- Product teams: faster launch with safer defaults for payments, subscriptions, and refunds.
-- Clients/stakeholders: stronger revenue reliability through duplicate protection and state convergence.
+Stripe integrations often look simple right up until retries, duplicate webhook deliveries, out-of-order events, refund safety, and local business-state correlation start to matter.
 
-## Modules (enable what you need)
-- Core: Stripe client + mapping + helpers
-- Webhooks: signature verify + event.id dedupe + handler routing
-- Payments: Checkout sessions (one-time)
-- Billing : subscriptions + invoice-driven lifecycle
-- Promotions : Checkout promotion codes / discounts
-- Refunds : full refunds (idempotent)
-- Reconciliation : demo endpoint (extractable)
-- Observability : baseline trace correlation via `ActivitySource` (`StripeKit`)
-- Tests : unit + integration
+`StripeKit.NET` is a focused .NET 8 library plus a minimal sample API that demonstrates a more disciplined integration shape:
 
-## Guarantees (the “correctness defaults”)
-- POST calls are idempotent (stable business key → idempotency key)
-- Webhooks verified using the raw request body (no “signature failed” surprises)
-- Events are replay-safe (dedupe by `event.id` after successful processing; failed events can be retried)
-- Payment/subscription transitions are order-aware by Stripe event `created`; stale events are ignored
-- Terminal/precedence rules prevent regressions (for example canceled subscriptions are not reactivated by delayed success events)
-- State is webhook-driven; reconciliation repairs gaps
+- **Hosted Checkout** for one-time payments and subscriptions
+- **Raw-body webhook verification** before event processing
+- **Idempotent create flows** for retry safety
+- **Duplicate-safe webhook handling** by Stripe event id
+- **Out-of-order event guards** to avoid state regression
+- **Refund validation and persistence**
+- **Recent-event reconciliation** through the same processing pipeline
+- **Tracing and correlation tags** for operational visibility
 
-## Repo layout example
-- /src/StripeKit
-- /samples/StripeKit.SampleApi
-- /tests/*
+The goal is not to be a giant abstraction over Stripe.  
+The goal is to show a **clean, testable, payments-aware integration baseline** that a real team could extend.
 
-Sample API includes a demo DB-backed adapter at `samples/StripeKit.SampleApi/SampleStorage/DbStripeKitStore.cs` with schema at `samples/StripeKit.SampleApi/SampleStorage/schema.sql`.
-This adapter is reference/demo-only and is not a production migration or durability recommendation.
+---
 
+## What it covers
 
-## Quick start
-1) Set env:
-   - STRIPE_SECRET_KEY
-   - STRIPE_WEBHOOK_SECRET
-2) Run:
-   - dotnet run --project samples/StripeKit.SampleApi
-3) Forward webhooks (Stripe CLI) to /webhooks/stripe
-4) Test:
-   - dotnet test
+### Core flows
+- Create hosted Checkout sessions for **payments**
+- Create hosted Checkout sessions for **subscriptions**
+- Persist local payment / subscription records keyed by **business ids**
+- Resolve or create Stripe customers while preserving **user correlation**
+- Verify webhook signatures from the **exact raw request payload**
+- Process webhook deliveries with **dedupe**, **retry-aware outcomes**, and **stale lease takeover**
+- Update local payment, subscription, and refund state from Stripe events
+- Backfill missing Stripe object ids from Checkout/webhook metadata
+- Reconcile recent Stripe events through the **same processor** used by webhooks
 
-## Module toggles (feature flags)
-Configure module flags in `samples/StripeKit.SampleApi/appsettings.json` under `StripeKit:Modules`:
-- `EnablePayments`
-- `EnableBilling`
-- `EnablePromotions`
-- `EnableWebhooks`
-- `EnableRefunds`
+### Engineering signals
+- Small, explicit interfaces at external seams
+- Typed options with validation
+- In-memory stores in the library
+- Demo ADO.NET-backed persistence in the sample API
+- Unit and integration tests focused on edge cases, not only happy paths
+- `ActivitySource` tracing plus structured correlation logging
 
-Example:
-```json
-"StripeKit": {
-  "Modules": {
-    "EnablePayments": true,
-    "EnableBilling": true,
-    "EnablePromotions": true,
-    "EnableWebhooks": true,
-    "EnableRefunds": true
-  }
-}
+---
+
+## Architecture at a glance
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as Sample API
+    participant Kit as StripeKit.NET
+    participant Stripe
+    participant Store as Local Store
+
+    Client->>API: POST /checkout/payment
+    API->>Kit: Create payment session
+    Kit->>Store: Save pending payment record
+    Kit->>Stripe: Create Checkout Session<br/>with idempotency key + metadata
+    Stripe-->>Client: Hosted Checkout
+    Stripe-->>API: Webhook delivery
+    API->>Kit: Verify raw payload signature
+    Kit->>Store: Deduplicate by event id
+    Kit->>Store: Apply payment/subscription/refund updates
+    Kit->>Store: Record processing outcome
 ```
 
-Invariant:
-- If `EnablePayments` or `EnableBilling` is `true`, `EnableWebhooks` must be `true`.
+---
 
-## Sample DB mode (optional)
-1) Apply `samples/StripeKit.SampleApi/SampleStorage/schema.sql` to your sample DB.
-2) Set both app settings:
-   - `StripeKit:DbProviderInvariantName`
-   - `StripeKit:DbConnectionString`
-3) Run sample API; it will use `DbStripeKitStore` instead of in-memory stores.
-4) Optional local check:
-   - `pwsh -File samples/StripeKit.SampleApi/SampleStorage/verify-schema.ps1`
+## What makes this interesting
 
-## Integration model (drop-in)
-StripeKit stays small by requiring only a few seams:
-- Storage adapter: mappings, processed events, local billing/payment/refund records
-- Domain hooks (optional): grant entitlement / email / provisioning
-- Promo policy hook (optional): business rules without touching payment core
+### Payments correctness, not just API wrapping
+This repo goes beyond “call Stripe SDK and return a URL”.
 
-## Reconciliation (simple by design)
-A scheduled job that:
-- lists recent Stripe events (default: last 30 days, limit 100) and backfills anything you didn’t process
-- reprocesses safely using the same `event.id` dedupe + idempotent handlers, including previously failed events
+It explicitly models several failure modes that matter in real integrations:
 
-(Goal: if a region/network hiccup causes delays or retries, your system converges to the correct state.)
+- **Deterministic idempotency keys** for create operations
+- **Webhook signature verification** from the untouched raw body
+- **Terminal vs retryable duplicate handling**
+- **Stale processing lease takeover**
+- **Out-of-order event protection**
+- **Business-id to Stripe-id correlation**
+- **Replay / reconciliation support** for missed or delayed processing
 
-## Required Stripe webhook event types
-Minimum events expected by StripeKit v1:
-- `payment_intent.succeeded`
-- `payment_intent.payment_failed`
-- `customer.subscription.created`
-- `customer.subscription.updated`
-- `customer.subscription.deleted`
-- `invoice.payment_succeeded`
-- `invoice.payment_failed`
-- `checkout.session.completed`
-- `refund.created`
-- `refund.updated`
-- `refund.failed`
+That is the kind of detail hiring managers usually want to see in payments code.
 
-These should be enabled on your Stripe webhook endpoint that targets `/webhooks/stripe`.
+### Good portfolio signal for backend roles
+This repository demonstrates:
+- boundary design without over-engineering
+- practical payment-domain thinking
+- testability through explicit seams
+- resilience-oriented event processing
+- operational awareness via tracing and structured logs
 
-Correlation note:
-- StripeKit writes `business_payment_id` / `business_subscription_id` metadata on Checkout create paths and uses those anchors as webhook fallback correlation when Stripe IDs were initially null.
+---
 
-## Idempotency key strategy
-StripeKit supports caller-provided idempotency keys and generates deterministic defaults when omitted.
+## Repository layout
 
-Recommended stable business anchors:
-- Checkout payment: `checkout_payment:{business_payment_id}`
-- Checkout subscription: `checkout_subscription:{business_subscription_id}`
-- Refund create: `refund:{business_refund_id}`
-- Customer get-or-create: `customer:{user_id}`
+```text
+src/StripeKit/                         Core library
+samples/StripeKit.SampleApi/           Minimal ASP.NET Core sample API
+samples/StripeKit.SampleApi/SampleStorage/
+                                       Demo DB-backed store + schema
+tests/StripeKit.Tests/                 Unit tests
+tests/StripeKit.IntegrationTests/      Integration tests
+docs/                                  Supporting notes and diagrams
+```
 
-Guidelines:
-- Use a stable business ID, never a random GUID per retry.
-- Reuse the same key on retries for the same business operation.
-- Keep one business operation mapped to one idempotency key.
+---
 
-## Promotions modes
-StripeKit supports both:
-- Customer-entered promotions in Checkout (`allow_promotion_codes`)
-- Backend-supplied discount (`coupon` or `promotion_code`)
+## Sample API capabilities
 
-Promotion outcomes tracked in flow:
-- `Applied`
-- `Invalid`
-- `Expired`
-- `NotApplicable`
+The sample API exposes minimal endpoints to exercise the main flows:
 
-## Observability baseline
-- StripeKit emits activities from source name `StripeKit` for checkout, refunds, webhooks, and reconciliation.
-- Correlation tags include `user_id`, business ids, Stripe ids, and `event_id` when available.
-- Sample API logging enables `trace_id` and `span_id` correlation fields.
+- `POST /checkout/payment`
+- `POST /checkout/subscription`
+- `POST /refunds`
+- `POST /webhooks/stripe`
+- `POST /reconcile`
 
-## Want this implemented in your app?
-Share: (1) Checkout vs PaymentIntents, (2) subscriptions yes/no, (3) which events you rely on.
-I’ll wire StripeKit into your codebase with tests and a minimal migration path.
+This keeps the integration surface concrete and easy to inspect.
+
+---
+
+## Quick start
+
+### 1. Configure secrets
+Set Stripe credentials via environment variables or configuration:
+
+- `STRIPE_SECRET_KEY`
+- `STRIPE_WEBHOOK_SECRET`
+
+### 2. Run the sample API
+```bash
+dotnet run --project samples/StripeKit.SampleApi
+```
+
+### 3. Exercise the flows
+Use the sample API to:
+- create a payment Checkout session
+- create a subscription Checkout session
+- send Stripe webhooks to the webhook endpoint
+- issue refunds
+- replay recent events via reconciliation
+
+---
+
+## Testing
+
+This repo includes both **unit tests** and **integration tests**, including coverage of subtle integration concerns such as:
+
+- deterministic idempotency generation
+- raw-body webhook verification contracts
+- duplicate event handling
+- retry-after-failure behavior
+- stale processing lease takeover
+- out-of-order payment/subscription events
+- metadata-based backfill when Stripe object ids are initially missing
+- refund guardrails and status updates
+- reconciliation replay behavior
+
+Run locally:
+
+```bash
+dotnet test
+```
+
+---
+
+## Why this README should matter to a reviewer
+
+If you are a hiring manager, this project is meant to signal more than “I can use Stripe”.
+
+It is meant to show that I understand how payment integrations behave under retries, duplicates, async delivery, state convergence, and support/debugging pressure — and that I can package that thinking into a maintainable .NET design rather than a one-off demo.
+
+If you are evaluating this as a reusable starting point, the library is intentionally narrow and composable: the core stays dependency-light, while the sample app shows one concrete persistence path.
+
+---
+
+## Current scope
+
+This repository currently focuses on:
+
+- hosted Checkout flows
+- webhook-driven state convergence
+- refunds
+- recent-event reconciliation
+- observability hooks
+- sample persistence adapters
+
+It is best understood as a **reference-style integration kit and portfolio-quality implementation**, not as an all-in-one Stripe product surface.
+
+---
+
+## Tech stack
+
+- **.NET 8**
+- **ASP.NET Core**
+- **Stripe.net**
+- **ADO.NET** in the sample persistence adapter
+- **xUnit**-style test projects for unit and integration coverage
+
+---
+
+## License
+
+Add your preferred license here.
