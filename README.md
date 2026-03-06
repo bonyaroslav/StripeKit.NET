@@ -81,33 +81,6 @@ sequenceDiagram
 
 ---
 
-## What makes this interesting
-
-### Payments correctness, not just API wrapping
-This repo goes beyond “call Stripe SDK and return a URL”.
-
-It explicitly models several failure modes that matter in real integrations:
-
-- **Deterministic idempotency keys** for create operations
-- **Webhook signature verification** from the untouched raw body
-- **Terminal vs retryable duplicate handling**
-- **Stale processing lease takeover**
-- **Out-of-order event protection**
-- **Business-id to Stripe-id correlation**
-- **Replay / reconciliation support** for missed or delayed processing
-
-That is the kind of detail hiring managers usually want to see in payments code.
-
-### Good portfolio signal for backend roles
-This repository demonstrates:
-- boundary design without over-engineering
-- practical payment-domain thinking
-- testability through explicit seams
-- resilience-oriented event processing
-- operational awareness via tracing and structured logs
-
----
-
 ## Repository layout
 
 ```text
@@ -178,16 +151,6 @@ Run locally:
 ```bash
 dotnet test
 ```
-
----
-
-## Why this README should matter to a reviewer
-
-If you are a hiring manager, this project is meant to signal more than “I can use Stripe”.
-
-It is meant to show that I understand how payment integrations behave under retries, duplicates, async delivery, state convergence, and support/debugging pressure — and that I can package that thinking into a maintainable .NET design rather than a one-off demo.
-
-If you are evaluating this as a reusable starting point, the library is intentionally narrow and composable: the core stays dependency-light, while the sample app shows one concrete persistence path.
 
 ---
 
